@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework import permissions, status, viewsets
-from rest_framework.filters import SearchFilter
+from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
@@ -16,9 +16,11 @@ from apps.shared.response import success_response
 
 class OPDVisitViewSet(viewsets.ModelViewSet):
     queryset = OPDVisit.objects.all()
-    filter_backends = (DjangoFilterBackend, SearchFilter)
+    filter_backends = (DjangoFilterBackend, SearchFilter, OrderingFilter)
     filterset_fields = ("visit_date", "status", "doctor_user", "patient")
     search_fields = ("patient__uhid", "patient__phone", "diagnosis", "visit_reason")
+    ordering_fields = ("created_at", "visit_date")
+    ordering = ("-created_at",)
 
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
 
@@ -44,7 +46,9 @@ class OPDVisitViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = super().get_queryset().select_related('patient', 'patient__address')
+        qs = super().get_queryset().select_related(
+            'patient', 'patient__address', 'patient__guardian'
+        )
         user = self.request.user
         if user.is_superuser:
             return qs
@@ -55,17 +59,12 @@ class OPDVisitViewSet(viewsets.ModelViewSet):
         doctor_user = serializer.validated_data.get("doctor_user")
         visit_date = serializer.validated_data.get("visit_date")
 
-        # Auto-assign queue number per hospital + visit_date + doctor.
+        # Auto-assign queue number per hospital + visit_date (global daily counter, resets each day).
         qs = OPDVisit.objects.filter(
             hospital_id=patient.hospital_id,
             visit_date=visit_date,
             is_deleted=False,
         )
-        if doctor_user:
-            qs = qs.filter(doctor_user=doctor_user)
-        else:
-            qs = qs.filter(doctor_user__isnull=True)
-
         next_queue = (qs.order_by("-queue_number").values_list("queue_number", flat=True).first() or 0) + 1
         visit = serializer.save(hospital_id=patient.hospital_id, queue_number=next_queue)
         create_audit_log(
@@ -76,6 +75,20 @@ class OPDVisitViewSet(viewsets.ModelViewSet):
             obj=visit,
             after={"patient_uhid": visit.patient.uhid, "visit_date": str(visit.visit_date), "status": visit.status},
         )
+        # Store the created visit on the serializer so create() can return full data.
+        serializer._created_visit = visit
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        visit = serializer._created_visit
+        # Re-fetch with all relations for the full read serializer response.
+        visit_full = OPDVisit.objects.select_related(
+            'patient', 'patient__address', 'patient__guardian', 'doctor_user'
+        ).get(pk=visit.pk)
+        read_serializer = OPDVisitSerializer(visit_full, context=self.get_serializer_context())
+        return success_response(read_serializer.data, status_code=status.HTTP_201_CREATED)
 
     @transaction.atomic
     def perform_update(self, serializer):
