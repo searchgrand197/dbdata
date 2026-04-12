@@ -1,0 +1,61 @@
+"""
+URL configuration for config project.
+
+The `urlpatterns` list routes URLs to views. For more information please see:
+    https://docs.djangoproject.com/en/5.0/topics/http/urls/
+Examples:
+Function views
+    1. Add an import:  from my_app import views
+    2. Add a URL to urlpatterns:  path('', views.home, name='home')
+Class-based views
+    1. Add an import:  from other_app.views import Home
+    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
+Including another URLconf
+    1. Import the include() function: from django.urls import include, path
+    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+"""
+from django.contrib import admin
+from django.urls import include, path
+from django.conf import settings
+from django.conf.urls.static import static
+
+from drf_spectacular.views import SpectacularAPIView
+
+from apps.attendance.leave_action_view import LeaveActionView
+from config.views import ApiConsoleView, FieldPermissionMatrixPageView
+
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    # One-click leave approve/deny from email — no login required
+    path("leave/action/<str:token>/", LeaveActionView.as_view(), name="leave-action"),
+    # OpenAPI schema + branded Swagger UI (HTML/CSS in templates/api_console.html)
+    path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
+    path("api/v1/schema/", SpectacularAPIView.as_view(), name="api-schema-v1"),
+    path(
+        "api/v1/docs/",
+        ApiConsoleView.as_view(),
+        name="swagger-ui",
+    ),
+    path("ui/field-permissions/", FieldPermissionMatrixPageView.as_view(), name="field-permissions-ui"),
+    # API v1 — single router so GET /api/v1/ lists all ViewSet roots (see config.api_v1_router_urls)
+    path("api/v1/", include("apps.accounts.api_urls")),
+    path("api/v1/", include("apps.roles_permissions.api_urls")),
+    path("api/v1/", include("config.api_v1_router_urls")),
+    path("api/v1/", include("apps.prescriptions.api_urls")),
+    path("api/v1/", include("apps.pharmacy.api_urls")),
+    path("api/v1/", include("apps.lab.api_urls")),
+    path("api/v1/", include("apps.attendance.api_urls")),
+    path("api/v1/", include("apps.beds.api_urls")),
+    path("api/v1/", include("apps.nursing.api_urls")),
+    path("api/v1/", include("apps.emergency.api_urls")),
+    path("api/v1/", include("apps.documents.api_urls")),
+    path("api/v1/", include("apps.notifications.api_urls")),
+    path("api/v1/", include("apps.reports.api_urls")),
+    path("api/v1/", include("apps.dashboard.api_urls")),
+    path("api/v1/", include("apps.settings_management.api_urls")),
+    path("api/v1/", include("apps.referrals.api_urls")),
+    path("api/v1/", include("apps.insurance.api_urls")),
+    path("api/v1/", include("apps.discharge.api_urls")),
+    # OPD Templates (replaces Node.js server.js — /api/templates, /api/print, etc.)
+    path("", include("apps.opd_templates.urls")),
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

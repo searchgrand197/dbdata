@@ -1,0 +1,370 @@
+from __future__ import annotations
+from decimal import Decimal
+
+from django.db import transaction
+from django.utils import timezone
+from rest_framework import permissions, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.filters import SearchFilter
+from rest_framework.response import Response
+
+from apps.ipd.models import IPDAdmission, IPDAdmissionStatusHistory, IPDTransferHistory
+from apps.ipd.serializers import IPDAdmissionCreateUpdateSerializer, IPDAdmissionSerializer
+from apps.opd.models import OPDVisit
+from apps.beds.models import Bed
+from apps.billing.models import BillingInvoice, InvoiceItem, InvoiceNumberSequence
+from apps.payments.models import PaymentTransaction
+from apps.payments.serializers import PaymentTransactionSerializer
+from apps.roles_permissions.permissions import HasRequiredPermission
+from apps.auditlogs.services import create_audit_log
+from apps.shared.response import success_response
+
+
+def _occupy_bed(bed_code: str, hospital_id):
+    """Mark a bed as OCCUPIED by its bed_code."""
+    if bed_code:
+        Bed.objects.filter(bed_code=bed_code, hospital_id=hospital_id).update(status=Bed.Status.OCCUPIED)
+
+
+def _release_bed(bed_code: str, hospital_id):
+    """Mark a bed as CLEANING (ready to be cleaned before next use)."""
+    if bed_code:
+        Bed.objects.filter(bed_code=bed_code, hospital_id=hospital_id).update(status=Bed.Status.CLEANING)
+
+
+class IPDAdmissionViewSet(viewsets.ModelViewSet):
+    queryset = IPDAdmission.objects.all()
+    filter_backends = (SearchFilter,)
+    search_fields = ("patient__uhid", "admission_diagnosis", "admission_notes", "ward_name", "room_name", "bed_code")
+
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+
+    required_permission_map = {
+        "list": "ipd.view_admission",
+        "retrieve": "ipd.view_admission",
+        "create": "ipd.create_admission",
+        "update": "ipd.update_admission",
+        "partial_update": "ipd.update_admission",
+        "destroy": "ipd.delete_admission",
+        "convert_from_opd": "ipd.create_admission",
+    }
+
+    def get_serializer_class(self):
+        if self.action in {"list", "retrieve"}:
+            return IPDAdmissionSerializer
+        return IPDAdmissionCreateUpdateSerializer
+
+    def get_required_permission(self) -> str | None:
+        return self.required_permission_map.get(getattr(self, "action", None))
+
+    def get_permissions(self):
+        self.required_permission = self.get_required_permission()
+        return super().get_permissions()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser:
+            return qs
+        return qs.filter(hospital_id=user.hospital_id)
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        # Hospital is derived from the chosen patient/opd_visit to keep tenancy safe.
+        hospital_id = None
+
+        patient = serializer.validated_data.get("patient")
+        if patient:
+            hospital_id = patient.hospital_id
+
+        if not hospital_id:
+            opd_visit = serializer.validated_data.get("opd_visit")
+            if opd_visit:
+                hospital_id = opd_visit.hospital_id
+
+        if not hospital_id:
+            hospital_id = self.request.user.hospital_id
+
+        admission: IPDAdmission = serializer.save(hospital_id=hospital_id)
+
+        # Mark the selected bed as occupied.
+        _occupy_bed(admission.bed_code, hospital_id)
+
+        IPDAdmissionStatusHistory.objects.create(
+            admission=admission,
+            from_status=admission.status,
+            to_status=admission.status,
+            changed_by=self.request.user,
+        )
+        create_audit_log(
+            request=self.request,
+            hospital=admission.hospital,
+            module="ipd",
+            action="create_admission",
+            obj=admission,
+            after={"patient_uhid": admission.patient.uhid, "status": admission.status},
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        admission: IPDAdmission = serializer.instance
+        hospital_id = admission.hospital_id
+
+        old_status = admission.status
+        old_ward = admission.ward_name
+        old_room = admission.room_name
+        old_bed = admission.bed_code
+
+        serializer.save()
+
+        new_status = admission.status
+
+        # ── Bed status management ──────────────────────────────────────────────
+        bed_changed = admission.bed_code != old_bed
+        discharged = new_status in (IPDAdmission.Status.DISCHARGED, IPDAdmission.Status.CANCELLED)
+
+        if discharged:
+            # Release the bed the patient was in.
+            _release_bed(old_bed, hospital_id)
+        elif bed_changed:
+            # Patient transferred: free old bed, occupy new bed.
+            _release_bed(old_bed, hospital_id)
+            _occupy_bed(admission.bed_code, hospital_id)
+        # ──────────────────────────────────────────────────────────────────────
+
+        if new_status != old_status:
+            IPDAdmissionStatusHistory.objects.create(
+                admission=admission,
+                from_status=old_status,
+                to_status=new_status,
+                changed_by=self.request.user,
+            )
+            create_audit_log(
+                request=self.request,
+                hospital=admission.hospital,
+                module="ipd",
+                action="update_status",
+                obj=admission,
+                before={"status": old_status},
+                after={"status": new_status},
+            )
+
+        # Transfer is triggered if any bed-identifying field changes.
+        if (
+            admission.ward_name != old_ward
+            or admission.room_name != old_room
+            or admission.bed_code != old_bed
+        ):
+            IPDTransferHistory.objects.create(
+                admission=admission,
+                from_ward_name=old_ward,
+                to_ward_name=admission.ward_name,
+                from_room_name=old_room,
+                to_room_name=admission.room_name,
+                from_bed_code=old_bed,
+                to_bed_code=admission.bed_code,
+                changed_by=self.request.user,
+            )
+            create_audit_log(
+                request=self.request,
+                hospital=admission.hospital,
+                module="ipd",
+                action="transfer_bed",
+                obj=admission,
+                before={"ward_name": old_ward, "room_name": old_room, "bed_code": old_bed},
+                after={"ward_name": admission.ward_name, "room_name": admission.room_name, "bed_code": admission.bed_code},
+            )
+
+    @action(detail=False, methods=["post"], url_path="convert-from-opd")
+    def convert_from_opd(self, request, *args, **kwargs):
+        opd_visit_id = request.data.get("opd_visit_id")
+        if not opd_visit_id:
+            return Response(
+                {"success": False, "errors": {"opd_visit_id": ["This field is required."]}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = OPDVisit.objects.all()
+        if not request.user.is_superuser:
+            qs = qs.filter(hospital_id=request.user.hospital_id)
+
+        try:
+            opd_visit: OPDVisit = qs.get(pk=opd_visit_id)
+        except OPDVisit.DoesNotExist:
+            return Response({"success": False, "errors": {"detail": ["OPD visit not found."]}}, status=404)
+
+        admission_data = {
+            "patient": opd_visit.patient_id,
+            "opd_visit": opd_visit.id,
+            "admission_date": timezone.now().date(),
+            "expected_discharge_date": request.data.get("expected_discharge_date"),
+            "assigned_doctor": request.data.get("assigned_doctor"),
+            "assigned_nurse": request.data.get("assigned_nurse"),
+            "ward_name": request.data.get("ward_name", ""),
+            "room_name": request.data.get("room_name", ""),
+            "bed_code": request.data.get("bed_code", ""),
+            "admission_diagnosis": request.data.get("admission_diagnosis") or opd_visit.diagnosis,
+            "admission_notes": request.data.get("admission_notes") or opd_visit.consultation_notes,
+            "status": IPDAdmission.Status.ADMITTED,
+            "discharge_notes": request.data.get("discharge_notes", ""),
+        }
+
+        serializer = IPDAdmissionCreateUpdateSerializer(data=admission_data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            admission: IPDAdmission = serializer.save(hospital_id=opd_visit.hospital_id)
+            # Mark OPD visit as completed when converted to IPD.
+            opd_visit.status = OPDVisit.Status.COMPLETED
+            opd_visit.save(update_fields=["status"])
+
+        create_audit_log(
+            request=request,
+            hospital=admission.hospital,
+            module="ipd",
+            action="convert_from_opd",
+            obj=admission,
+            before={"opd_visit_id": str(opd_visit.id), "opd_status": OPDVisit.Status.COMPLETED},
+            after={"patient_uhid": admission.patient.uhid, "status": admission.status},
+        )
+
+        return success_response(data=IPDAdmissionSerializer(admission).data, status_code=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"])
+    def payments(self, request, pk=None):
+        """List all payments for this admission."""
+        admission = self.get_object()
+        payments = PaymentTransaction.objects.filter(
+            invoice__ipd_admission=admission,
+            status=PaymentTransaction.Status.SUCCESS
+        ).select_related("invoice", "collected_by")
+        return Response(PaymentTransactionSerializer(payments, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="capture-advance")
+    @transaction.atomic
+    def capture_advance(self, request, pk=None):
+        """Create an advance invoice and payment for this admission."""
+        admission = self.get_object()
+        amount_str = request.data.get("amount")
+        mode = request.data.get("payment_mode", "cash")
+        ref = request.data.get("reference", "")
+
+        if not amount_str:
+            return Response({"error": "Amount is required"}, status=400)
+        
+        try:
+            amount = Decimal(str(amount_str))
+        except:
+            return Response({"error": "Invalid amount format"}, status=400)
+
+        if amount <= 0:
+            return Response({"error": "Amount must be greater than zero"}, status=400)
+
+        # 1. Generate Invoice No
+        hospital = admission.hospital
+        hospital_id = hospital.id
+        year = timezone.now().year
+        seq, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(hospital_id=hospital_id, year=year)
+        seq.last_seq += 1
+        seq.save(update_fields=["last_seq"])
+        
+        slug_part = (hospital.slug or hospital.name or "HOSP")[:5].upper()
+        invoice_no = f"IPDADV-{slug_part}-{year}-{seq.last_seq:04d}"
+
+        # 2. Create Invoice
+        invoice = BillingInvoice.objects.create(
+            hospital_id=hospital_id,
+            invoice_no=invoice_no,
+            encounter_type=BillingInvoice.EncounterType.IPD,
+            patient=admission.patient,
+            ipd_admission=admission,
+            status=BillingInvoice.Status.FINALIZED,
+            subtotal_amount=amount,
+            total_amount=amount,
+            amount_paid=amount,
+            currency="INR",
+            invoice_date=timezone.now().date()
+        )
+        
+        InvoiceItem.objects.create(
+            invoice=invoice,
+            description="Advance Payment",
+            quantity=Decimal("1"),
+            unit_price=amount,
+            line_total=amount
+        )
+
+        # 3. Create Payment
+        payment = PaymentTransaction.objects.create(
+            hospital_id=hospital_id,
+            invoice=invoice,
+            payment_mode=mode,
+            amount=amount,
+            transaction_reference=ref,
+            status=PaymentTransaction.Status.SUCCESS,
+            collected_by=request.user,
+            paid_at=timezone.now()
+        )
+
+        return Response({
+            "success": True,
+            "invoice_no": invoice.invoice_no,
+            "payment": PaymentTransactionSerializer(payment).data
+        })
+
+    @action(detail=True, methods=["post"], url_path="add-charge")
+    @transaction.atomic
+    def add_charge(self, request, pk=None):
+        """Add a service charge (e.g. Surgery, Procedure) to this admission."""
+        admission = self.get_object()
+        description = request.data.get("description")
+        amount_str = request.data.get("amount")
+
+        if not description or not amount_str:
+            return Response({"error": "Description and amount are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            amount = Decimal(str(amount_str))
+        except:
+            return Response({"error": "Invalid amount format"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. Generate Invoice No (Prefix IPDSRV)
+        hospital = admission.hospital
+        hospital_id = hospital.id
+        year = timezone.now().year
+        seq, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(hospital_id=hospital_id, year=year)
+        seq.last_seq += 1
+        seq.save(update_fields=["last_seq"])
+        
+        slug_part = (hospital.slug or hospital.name or "HOSP")[:5].upper()
+        invoice_no = f"IPDSRV-{slug_part}-{year}-{seq.last_seq:04d}"
+
+        # 2. Create Invoice
+        invoice = BillingInvoice.objects.create(
+            hospital_id=hospital_id,
+            invoice_no=invoice_no,
+            encounter_type=BillingInvoice.EncounterType.IPD,
+            patient=admission.patient,
+            ipd_admission=admission,
+            status=BillingInvoice.Status.FINALIZED,
+            subtotal_amount=amount,
+            total_amount=amount,
+            amount_paid=Decimal("0.00"),  # Services are UNPAID by default, advances cover them later
+            currency="INR",
+            invoice_date=timezone.now().date()
+        )
+        
+        InvoiceItem.objects.create(
+            invoice=invoice,
+            description=description,
+            quantity=Decimal("1"),
+            unit_price=amount,
+            line_total=amount
+        )
+
+        return Response({
+            "success": True,
+            "invoice_no": invoice.invoice_no,
+            "description": description,
+            "amount": amount
+        })

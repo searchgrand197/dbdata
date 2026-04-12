@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+from django.db import transaction
+from rest_framework import permissions, status, viewsets
+from rest_framework.filters import SearchFilter
+from rest_framework.response import Response
+from django_filters.rest_framework import DjangoFilterBackend
+
+from apps.opd.models import OPDVisit, OPDVisitStatusHistory
+from apps.opd.serializers import OPDVisitCreateUpdateSerializer, OPDVisitSerializer
+from apps.patients.models import Patient
+from apps.roles_permissions.permissions import HasRequiredPermission
+from apps.auditlogs.services import create_audit_log
+from apps.shared.response import success_response
+
+
+class OPDVisitViewSet(viewsets.ModelViewSet):
+    queryset = OPDVisit.objects.all()
+    filter_backends = (DjangoFilterBackend, SearchFilter)
+    filterset_fields = ("visit_date", "status", "doctor_user", "patient")
+    search_fields = ("patient__uhid", "patient__phone", "diagnosis", "visit_reason")
+
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+
+    required_permission_map = {
+        "list": "opd.view_opd_visit",
+        "retrieve": "opd.view_opd_visit",
+        "create": "opd.create_opd_visit",
+        "update": "opd.update_opd_visit",
+        "partial_update": "opd.update_opd_visit",
+        "destroy": "opd.delete_opd_visit",
+    }
+
+    def get_serializer_class(self):
+        if self.action in {"list", "retrieve"}:
+            return OPDVisitSerializer
+        return OPDVisitCreateUpdateSerializer
+
+    def get_required_permission(self) -> str | None:
+        return self.required_permission_map.get(getattr(self, "action", None))
+
+    def get_permissions(self):
+        self.required_permission = self.get_required_permission()
+        return super().get_permissions()
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related('patient', 'patient__address')
+        user = self.request.user
+        if user.is_superuser:
+            return qs
+        return qs.filter(hospital_id=user.hospital_id)
+
+    def perform_create(self, serializer):
+        patient: Patient = serializer.validated_data["patient"]
+        doctor_user = serializer.validated_data.get("doctor_user")
+        visit_date = serializer.validated_data.get("visit_date")
+
+        # Auto-assign queue number per hospital + visit_date + doctor.
+        qs = OPDVisit.objects.filter(
+            hospital_id=patient.hospital_id,
+            visit_date=visit_date,
+            is_deleted=False,
+        )
+        if doctor_user:
+            qs = qs.filter(doctor_user=doctor_user)
+        else:
+            qs = qs.filter(doctor_user__isnull=True)
+
+        next_queue = (qs.order_by("-queue_number").values_list("queue_number", flat=True).first() or 0) + 1
+        visit = serializer.save(hospital_id=patient.hospital_id, queue_number=next_queue)
+        create_audit_log(
+            request=self.request,
+            hospital=visit.hospital,
+            module="opd",
+            action="create_visit",
+            obj=visit,
+            after={"patient_uhid": visit.patient.uhid, "visit_date": str(visit.visit_date), "status": visit.status},
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        visit: OPDVisit = serializer.instance
+        old_status = visit.status
+        serializer.save()
+        new_status = serializer.instance.status
+        if new_status != old_status:
+            OPDVisitStatusHistory.objects.create(
+                visit=visit,
+                from_status=old_status,
+                to_status=new_status,
+                changed_by=self.request.user,
+            )
+            create_audit_log(
+                request=self.request,
+                hospital=visit.hospital,
+                module="opd",
+                action="update_status",
+                obj=visit,
+                before={"status": old_status},
+                after={"status": new_status},
+            )
+
+from datetime import date, timedelta
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def follow_up_alerts(request):
+    """
+    Returns OPD visits where follow_up_date is today or tomorrow.
+    Used by the receptionist portal to show follow-up call alerts.
+    """
+    hospital = getattr(request.user, 'hospital', None)
+    if not hospital:
+        if request.user.is_superuser:
+            hospital = Hospital.objects.first()
+        else:
+            return Response([])
+
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+
+    visits = OPDVisit.objects.filter(
+        hospital=hospital,
+        follow_up_date__in=[today, tomorrow],
+        follow_up_completed=False,
+        deleted_at__isnull=True,
+    ).select_related('patient', 'doctor_user').order_by('follow_up_date')
+
+    results = []
+    for v in visits:
+        patient = v.patient
+        name = f"{patient.first_name} {patient.last_name}".strip() or patient.uhid
+        is_today = v.follow_up_date == today
+        is_tomorrow = v.follow_up_date == tomorrow
+        results.append({
+            'id': str(v.id),
+            'patient_name': name,
+            'patient_phone': getattr(patient, 'phone', ''),
+            'uhid': patient.uhid,
+            'follow_up_date': str(v.follow_up_date),
+            'original_visit_date': str(v.visit_date),
+            'is_today': is_today,
+            'is_tomorrow': is_tomorrow,
+            'visit_reason': v.visit_reason,
+            'revisit_advice': v.revisit_advice,
+            'doctor_name': v.doctor_user.full_name if v.doctor_user else '',
+        })
+
+    return Response(results)

@@ -1,0 +1,147 @@
+from rest_framework import serializers
+
+from apps.opd.models import OPDVisit
+
+
+class OPDVisitSerializer(serializers.ModelSerializer):
+    patient_uhid = serializers.CharField(source="patient.uhid", read_only=True)
+    patient_name = serializers.SerializerMethodField()
+    patient_phone = serializers.CharField(source="patient.phone", read_only=True, default="")
+    patient_age = serializers.SerializerMethodField()
+    patient_gender = serializers.CharField(source="patient.gender", read_only=True, default="")
+    patient_address = serializers.SerializerMethodField()
+    patient_city = serializers.SerializerMethodField()
+    patient_state = serializers.SerializerMethodField()
+    token_number = serializers.IntegerField(source="queue_number", read_only=True)
+    chief_complaint = serializers.CharField(source="visit_reason", read_only=True)
+    room_code = serializers.SerializerMethodField()
+    doctor_user_email = serializers.EmailField(source="doctor_user.email", read_only=True)
+    hospital_id = serializers.UUIDField(read_only=True)
+
+    class Meta:
+        model = OPDVisit
+        fields = [
+            "id",
+            "hospital_id",
+            "patient",
+            "patient_uhid",
+            "patient_name",
+            "patient_phone",
+            "patient_age",
+            "patient_gender",
+            "patient_address",
+            "patient_city",
+            "patient_state",
+            "visit_date",
+            "queue_number",
+            "token_number",
+            "doctor_user",
+            "doctor_user_email",
+            "visit_reason",
+            "chief_complaint",
+            "room_code",
+            "symptoms",
+            "vitals",
+            "consultation_notes",
+            "diagnosis",
+            "test_recommendations",
+            "revisit_advice",
+            "follow_up_date",
+            "follow_up_completed",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_patient_name(self, obj):
+        try:
+            return obj.patient.full_name
+        except Exception:
+            first = getattr(obj.patient, "first_name", "") or ""
+            last = getattr(obj.patient, "last_name", "") or ""
+            name = f"{first} {last}".strip()
+            return name or None
+
+    def get_patient_age(self, obj):
+        from datetime import date as _date
+        dob = getattr(obj.patient, "dob", None)
+        if not dob:
+            return None
+        today = _date.today()
+        age = today.year - dob.year
+        if (today.month, today.day) < (dob.month, dob.day):
+            age -= 1
+        return age
+
+    def get_patient_address(self, obj):
+        try:
+            return obj.patient.address.line1 or ""
+        except Exception:
+            return ""
+
+    def get_patient_city(self, obj):
+        try:
+            return obj.patient.address.city or ""
+        except Exception:
+            return ""
+
+    def get_patient_state(self, obj):
+        try:
+            return obj.patient.address.state or ""
+        except Exception:
+            return ""
+
+    def get_room_code(self, obj):
+        # Backward-compatibility for old frontend payload/filters.
+        return None
+
+
+class OPDVisitCreateUpdateSerializer(serializers.ModelSerializer):
+    # Backward-compatibility aliases for existing frontend:
+    # chief_complaint -> visit_reason, token_number -> queue_number.
+    chief_complaint = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    token_number = serializers.IntegerField(write_only=True, required=False)
+    room_code = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = OPDVisit
+        fields = [
+            "patient",
+            "visit_date",
+            "queue_number",
+            "token_number",
+            "doctor_user",
+            "chief_complaint",
+            "room_code",
+            "visit_reason",
+            "symptoms",
+            "vitals",
+            "consultation_notes",
+            "diagnosis",
+            "test_recommendations",
+            "revisit_advice",
+            "follow_up_date",
+            "follow_up_completed",
+            "status",
+        ]
+
+    def validate(self, attrs):
+        # Map chief_complaint alias to visit_reason.
+        chief = attrs.pop("chief_complaint", None)
+        if chief is not None and not attrs.get("visit_reason"):
+            attrs["visit_reason"] = chief
+
+        # Map token_number alias to queue_number if provided.
+        token_number = attrs.pop("token_number", None)
+        if token_number is not None and not attrs.get("queue_number"):
+            attrs["queue_number"] = token_number
+
+        # room_code is accepted for compatibility; currently not persisted.
+        attrs.pop("room_code", None)
+
+        # Map frontend status alias.
+        if attrs.get("status") == "in_consultation":
+            attrs["status"] = OPDVisit.Status.IN_PROGRESS
+
+        return attrs
+
