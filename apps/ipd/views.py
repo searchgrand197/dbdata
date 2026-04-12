@@ -237,8 +237,87 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         payments = PaymentTransaction.objects.filter(
             invoice__ipd_admission=admission,
             status=PaymentTransaction.Status.SUCCESS
-        ).select_related("invoice", "collected_by")
+        ).select_related("invoice", "collected_by").order_by("-created_at")
         return Response(PaymentTransactionSerializer(payments, many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def ledger(self, request, pk=None):
+        """Calculate running IPD ledger including dynamic room rent."""
+        admission = self.get_object()
+        
+        # 1. Invoices (Charges)
+        invoices = BillingInvoice.objects.filter(
+            ipd_admission=admission, status=BillingInvoice.Status.FINALIZED
+        ).prefetch_related("items").order_by("-created_at")
+        
+        record_charges = []
+        invoices_total = Decimal("0.00")
+        for inv in invoices:
+            invoices_total += inv.total_amount
+            items = list(inv.items.all())
+            desc = items[0].description if len(items) == 1 else f"{len(items)} items"
+            record_charges.append({
+                "id": str(inv.id),
+                "type": "charge",
+                "date": inv.created_at.isoformat(),
+                "description": desc,
+                "amount": str(inv.total_amount),
+                "invoice_no": inv.invoice_no
+            })
+            
+        # 2. Dynamic Room Rent
+        room_rent = Decimal("0.00")
+        bed = Bed.objects.select_related('room').filter(bed_code=admission.bed_code, hospital_id=admission.hospital_id).first()
+        days = 1
+        if admission.status in (IPDAdmission.Status.DISCHARGED, IPDAdmission.Status.CANCELLED) and admission.discharged_at:
+            days = max(1, (admission.discharged_at.date() - admission.admission_date).days)
+        else:
+            days = max(1, (timezone.now().date() - admission.admission_date).days)
+            
+        if bed and bed.room and bed.room.daily_charge:
+            room_rent = bed.room.daily_charge * days
+            record_charges.append({
+                "id": "room_rent",
+                "type": "room_rent",
+                "date": timezone.now().isoformat(),
+                "description": f"Room Rent ({days} days @ ₹{bed.room.daily_charge})",
+                "amount": str(room_rent),
+                "invoice_no": "SYSTEM"
+            })
+            
+        total_charges = invoices_total + room_rent
+        
+        # 3. Payments
+        payments = PaymentTransaction.objects.filter(
+            invoice__ipd_admission=admission,
+            status=PaymentTransaction.Status.SUCCESS
+        ).select_related("invoice").order_by("-created_at")
+        
+        record_payments = []
+        total_paid = Decimal("0.00")
+        for p in payments:
+            total_paid += p.amount
+            desc_prefix = "Advance" if "ADV" in p.invoice.invoice_no else "Payment"
+            record_payments.append({
+                "id": str(p.id),
+                "type": "payment",
+                "date": p.created_at.isoformat(),
+                "description": f"{desc_prefix} - {p.payment_mode.upper()}",
+                "amount": str(p.amount),
+                "invoice_no": p.invoice.invoice_no
+            })
+            
+        balance_due = total_charges - total_paid
+
+        return Response({
+            "total_charges": str(total_charges),
+            "total_paid": str(total_paid),
+            "balance_due": str(balance_due),
+            "charges": record_charges,
+            "payments": record_payments,
+            "room_rent": str(room_rent),
+            "days": days
+        })
 
     @action(detail=True, methods=["post"], url_path="capture-advance")
     @transaction.atomic
@@ -340,6 +419,9 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         invoice_no = f"IPDSRV-{slug_part}-{year}-{seq.last_seq:04d}"
 
         # 2. Create Invoice
+        payment_mode = request.data.get("payment_mode", "credit")
+        amount_paid = amount if payment_mode in ["cash", "upi", "other"] else Decimal("0.00")
+
         invoice = BillingInvoice.objects.create(
             hospital_id=hospital_id,
             invoice_no=invoice_no,
@@ -349,7 +431,7 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             status=BillingInvoice.Status.FINALIZED,
             subtotal_amount=amount,
             total_amount=amount,
-            amount_paid=Decimal("0.00"),  # Services are UNPAID by default, advances cover them later
+            amount_paid=amount_paid,
             currency="INR",
             invoice_date=timezone.now().date()
         )
@@ -362,9 +444,24 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             line_total=amount
         )
 
+        payment_data = None
+        if amount_paid > 0:
+            payment = PaymentTransaction.objects.create(
+                hospital_id=hospital_id,
+                invoice=invoice,
+                payment_mode=payment_mode,
+                amount=amount,
+                transaction_reference="",
+                status=PaymentTransaction.Status.SUCCESS,
+                collected_by=request.user,
+                paid_at=timezone.now()
+            )
+            payment_data = PaymentTransactionSerializer(payment).data
+
         return Response({
             "success": True,
             "invoice_no": invoice.invoice_no,
             "description": description,
-            "amount": amount
+            "amount": amount,
+            "payment": payment_data
         })

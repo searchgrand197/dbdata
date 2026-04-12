@@ -12,10 +12,12 @@ class OPDVisitSerializer(serializers.ModelSerializer):
     patient_address = serializers.SerializerMethodField()
     patient_city = serializers.SerializerMethodField()
     patient_state = serializers.SerializerMethodField()
+    patient_guardian_name = serializers.SerializerMethodField()
     token_number = serializers.IntegerField(source="queue_number", read_only=True)
     chief_complaint = serializers.CharField(source="visit_reason", read_only=True)
     room_code = serializers.SerializerMethodField()
     doctor_user_email = serializers.EmailField(source="doctor_user.email", read_only=True)
+    doctor_name = serializers.SerializerMethodField()
     hospital_id = serializers.UUIDField(read_only=True)
 
     class Meta:
@@ -32,11 +34,13 @@ class OPDVisitSerializer(serializers.ModelSerializer):
             "patient_address",
             "patient_city",
             "patient_state",
+            "patient_guardian_name",
             "visit_date",
             "queue_number",
             "token_number",
             "doctor_user",
             "doctor_user_email",
+            "doctor_name",
             "visit_reason",
             "chief_complaint",
             "room_code",
@@ -49,6 +53,8 @@ class OPDVisitSerializer(serializers.ModelSerializer):
             "follow_up_date",
             "follow_up_completed",
             "status",
+            "amount",
+            "payment_mode",
             "created_at",
             "updated_at",
         ]
@@ -91,9 +97,23 @@ class OPDVisitSerializer(serializers.ModelSerializer):
         except Exception:
             return ""
 
+    def get_patient_guardian_name(self, obj):
+        try:
+            return obj.patient.guardian.name or ""
+        except Exception:
+            return ""
+
     def get_room_code(self, obj):
         # Backward-compatibility for old frontend payload/filters.
         return None
+
+    def get_doctor_name(self, obj):
+        if not obj.doctor_user:
+            return ""
+        first = getattr(obj.doctor_user, "first_name", "") or ""
+        last = getattr(obj.doctor_user, "last_name", "") or ""
+        name = f"{first} {last}".strip()
+        return name or obj.doctor_user.email
 
 
 class OPDVisitCreateUpdateSerializer(serializers.ModelSerializer):
@@ -119,10 +139,11 @@ class OPDVisitCreateUpdateSerializer(serializers.ModelSerializer):
             "consultation_notes",
             "diagnosis",
             "test_recommendations",
-            "revisit_advice",
             "follow_up_date",
             "follow_up_completed",
             "status",
+            "amount",
+            "payment_mode",
         ]
 
     def validate(self, attrs):

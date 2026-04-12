@@ -12,6 +12,11 @@ class OPDVisit(SoftDeleteModel, TimeStampedModel, UUIDPrimaryKeyModel):
         COMPLETED = "completed"
         CANCELLED = "cancelled"
 
+    class PaymentMode(models.TextChoices):
+        CASH = "cash", "Cash"
+        UPI = "upi", "UPI"
+        OTHER = "other", "Other"
+
     hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="opd_visits")
     patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="opd_visits")
 
@@ -38,6 +43,8 @@ class OPDVisit(SoftDeleteModel, TimeStampedModel, UUIDPrimaryKeyModel):
     follow_up_completed = models.BooleanField(default=False, db_index=True)
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.WAITING, db_index=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    payment_mode = models.CharField(max_length=20, choices=PaymentMode.choices, default=PaymentMode.CASH, blank=True)
 
     class Meta:
         indexes = [

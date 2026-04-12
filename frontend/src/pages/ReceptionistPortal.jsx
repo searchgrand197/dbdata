@@ -8,7 +8,7 @@ import {
   Bed, AlertTriangle, FileText, UserPlus, Hospital, LogOut,
   ChevronDown, ChevronRight, ClipboardList, Activity,
   XCircle, CheckCircle, Clock, RefreshCw, Eye, PlusCircle,
-  Wind, IndianRupee, Receipt, Trash2, CreditCard, Bell, Phone, X,
+  Wind, IndianRupee, Receipt, Trash2, CreditCard, Bell, Phone, X, Tag,
 } from 'lucide-react'
 import { getRoomsConfig, saveRoomsConfig, getTvGroupsConfig, saveTvGroupsConfig } from '../utils/rooms'
 import BedSelector from '../components/BedSelector'
@@ -20,6 +20,7 @@ const NAV_GROUPS = [
     label: 'OPD',
     items: [
       { id: 'opd', label: 'Token Queue', icon: Users },
+      { id: 'opd_history', label: 'OPD Slips', icon: FileText },
       { id: 'opd_template', label: 'OPD Template', icon: Printer },
     ],
   },
@@ -191,18 +192,27 @@ function PrintSlip({ visit, onClose }) {
             const initValues = {}
             for (const f of fields) {
               const lowerF = f.toLowerCase()
-              if (lowerF.includes('name') || lowerF.includes('patient')) initValues[f] = visit.patient_name || ''
+              const gAbbr = (visit.patient_gender === 'female' ? 'F' : visit.patient_gender === 'male' ? 'M' : 'O')
+              const ageSexVal = [gAbbr, visit.patient_age ? String(visit.patient_age) : ''].filter(Boolean).join(' ')
+              const fullAddress = [visit.patient_address, visit.patient_city, visit.patient_state].filter(Boolean).join(', ')
+              // NOTE: guardian must be checked BEFORE generic 'name' check
+              if (lowerF.includes('guardian') || lowerF.includes('relative') || lowerF.includes('attendant')) initValues[f] = visit.patient_guardian_name || ''
+              else if (lowerF.includes('patient') && !lowerF.includes('guardian')) initValues[f] = visit.patient_name || ''
+              else if (lowerF === 'name' || (lowerF.includes('name') && !lowerF.includes('guardian'))) initValues[f] = visit.patient_name || ''
               else if (lowerF.includes('date')) initValues[f] = visit.visit_date || ''
               else if (lowerF.includes('reg') || lowerF.includes('uhid')) initValues[f] = visit.patient_uhid || ''
               else if (lowerF.includes('phone') || lowerF.includes('mobile') || lowerF.includes('contact')) initValues[f] = visit.patient_phone || ''
-              else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('no')) initValues[f] = String(visit.token_number || '')
+              else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) initValues[f] = String(visit.token_number || visit.queue_number || '')
               else if (lowerF.includes('complaint') || lowerF.includes('reason')) initValues[f] = visit.chief_complaint || ''
               else if (lowerF.includes('doctor') || lowerF.includes('doc')) initValues[f] = visit.doc_name || ''
-              else if (lowerF.includes('age')) initValues[f] = visit.patient_age ? String(visit.patient_age) : ''
-              else if (lowerF.includes('gender') || lowerF.includes('sex')) initValues[f] = visit.patient_gender || ''
-              else if (lowerF.includes('address')) initValues[f] = visit.patient_address || ''
+              else if (lowerF.includes('age') || lowerF.includes('sex')) initValues[f] = ageSexVal
+              else if (lowerF.includes('gender')) initValues[f] = visit.patient_gender || ''
+              else if (lowerF.includes('address')) initValues[f] = fullAddress
               else if (lowerF.includes('city') || lowerF.includes('town')) initValues[f] = visit.patient_city || ''
               else if (lowerF.includes('state')) initValues[f] = visit.patient_state || ''
+              else if (lowerF.includes('amount') || lowerF.includes('fee') || lowerF.includes('charge')) {
+                initValues[f] = visit.amount ? `${visit.amount} (${visit.payment_mode || 'cash'})` : ''
+              }
               else initValues[f] = ''
             }
             setFieldValues(initValues)
@@ -231,11 +241,16 @@ function PrintSlip({ visit, onClose }) {
       </style></head>
       <body>
       <div class="logo">🏥 HMS Hospital</div>
-      <div class="token">${visit.room?.prefix || ''}${visit.token_number}</div>
+      <div class="token">${visit.room?.prefix || ''}${visit.token_number || visit.queue_number || ''}</div>
+      <div class="row"><span class="label">OPD No.</span><span>${visit.token_number || visit.queue_number || ''}</span></div>
+      <div class="row"><span class="label">UHID</span><span>${visit.patient_uhid || ''}</span></div>
       <div class="row"><span class="label">Patient</span><span>${visit.patient_name}</span></div>
+      ${visit.patient_guardian_name ? `<div class="row"><span class="label">Guardian</span><span>${visit.patient_guardian_name}</span></div>` : ''}
       <div class="row"><span class="label">Date</span><span>${visit.visit_date}</span></div>
       <div class="row"><span class="label">Doctor</span><span>${visit.room?.label || visit.doc_name || 'OPD'}</span></div>
       <div class="row"><span class="label">Complaint</span><span>${visit.chief_complaint || '-'}</span></div>
+      ${visit.patient_city ? `<div class="row"><span class="label">City</span><span>${visit.patient_city}${visit.patient_state ? ', ' + visit.patient_state : ''}</span></div>` : ''}
+      ${visit.amount ? `<div class="row"><span class="label">Amount</span><span>₹${visit.amount}</span></div>` : ''}
       <div class="footer">Please wait for your token to be called<br>Keep this slip safe</div>
       <script>window.onload = function() { window.print(); };</script>
       </body></html>
@@ -330,10 +345,13 @@ function OPDSection({ rooms }) {
     patient_name: '',
     gender: 'male',
     age: '',
+    guardian_name: '',
     address_line1: '',
     city: 'Jind',
     state: 'Haryana',
     doctor: '',
+    amount: '',
+    payment_mode: 'cash',
     chief_complaint: '',
     visit_date: format(new Date(), 'yyyy-MM-dd'),
   }
@@ -505,6 +523,7 @@ function OPDSection({ rooms }) {
                 address_line1: p.address_line1 || '',
                 city: p.city || '',
                 state: p.state || '',
+                guardian_name: p.guardian_name || '',
               }))
             }
           } catch {
@@ -652,6 +671,8 @@ function OPDSection({ rooms }) {
         visit_date: form.visit_date,
         chief_complaint: form.chief_complaint,
         doctor_user: form.doctor || null,
+        amount: form.amount || null,
+        payment_mode: form.payment_mode || 'cash',
         status: 'waiting',
       })
       const payload = data?.data || data
@@ -660,32 +681,56 @@ function OPDSection({ rooms }) {
       const ptName = (form.patient_name || '').trim() ||
         [matchedPatient?.first_name, matchedPatient?.last_name].filter(Boolean).join(' ') ||
         'Patient'
-      toast.success(`Token #${payload?.token_number || payload?.queue_number || ''} assigned!`)
+      const tokenNum = payload?.token_number || payload?.queue_number || ''
+      toast.success(`Token #${tokenNum} assigned!`)
 
       if (submitActionRef.current === 'a4') {
-        let printUhid = matchedPatient?.uhid || '';
-        let printPhone = matchedPatient?.phone || '';
+        let printUhid = payload?.patient_uhid || matchedPatient?.uhid || '';
+        let printPhone = payload?.patient_phone || matchedPatient?.phone || '';
+        let printCity = payload?.patient_city || form.city || '';
+        let printState = payload?.patient_state || form.state || '';
+        let printGuardian = payload?.patient_guardian_name || form.guardian_name || '';
+
+        const genderAbbr = form.gender === 'female' ? 'F' : form.gender === 'male' ? 'M' : 'O'
+        const ageSex = [genderAbbr, form.age].filter(Boolean).join(' ')
+        const ptAddress = [form.address_line1, printCity, printState].filter(Boolean).join(', ')
 
         const finalValues = { ...templateValues }
         for (const f of layoutFields) {
           const lowerF = f.toLowerCase()
-          if (lowerF.includes('name') || lowerF.includes('patient')) finalValues[f] = finalValues[f] || ptName
+          // NOTE: guardian must be checked BEFORE generic 'name' check
+          if (lowerF.includes('guardian') || lowerF.includes('relative') || lowerF.includes('attendant')) finalValues[f] = finalValues[f] || printGuardian
+          else if (lowerF.includes('patient') && !lowerF.includes('guardian')) finalValues[f] = finalValues[f] || ptName
+          else if (lowerF === 'name' || (lowerF.includes('name') && !lowerF.includes('guardian'))) finalValues[f] = finalValues[f] || ptName
           else if (lowerF.includes('date')) finalValues[f] = finalValues[f] || form.visit_date
-          else if (lowerF.includes('reg') || lowerF.includes('uhid')) finalValues[f] = finalValues[f] || payload?.patient_uhid || printUhid || ''
-          else if (lowerF.includes('phone') || lowerF.includes('mobile') || lowerF.includes('contact')) finalValues[f] = finalValues[f] || payload?.patient_phone || printPhone || form.phone.replace(/\D/g, '') || ''
-          else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('no')) finalValues[f] = finalValues[f] || String(payload?.token_number || payload?.queue_number || '')
+          else if (lowerF.includes('reg') || lowerF.includes('uhid')) finalValues[f] = finalValues[f] || printUhid || ''
+          else if (lowerF.includes('phone') || lowerF.includes('mobile') || lowerF.includes('contact')) finalValues[f] = finalValues[f] || printPhone || form.phone.replace(/\D/g, '') || ''
+          else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) finalValues[f] = finalValues[f] || String(tokenNum)
           else if (lowerF.includes('complaint') || lowerF.includes('reason')) finalValues[f] = finalValues[f] || form.chief_complaint || ''
           else if (lowerF.includes('doctor') || lowerF.includes('doc')) finalValues[f] = finalValues[f] || selectedDoc?.name || ''
-          else if (lowerF.includes('age')) finalValues[f] = finalValues[f] || form.age || ''
-          else if (lowerF.includes('gender') || lowerF.includes('sex')) finalValues[f] = finalValues[f] || form.gender || ''
-          else if (lowerF.includes('address')) finalValues[f] = finalValues[f] || form.address_line1 || ''
-          else if (lowerF.includes('city') || lowerF.includes('town')) finalValues[f] = finalValues[f] || form.city || ''
-          else if (lowerF.includes('state')) finalValues[f] = finalValues[f] || form.state || ''
+          else if (lowerF.includes('age') || lowerF.includes('sex')) finalValues[f] = finalValues[f] || ageSex
+          else if (lowerF.includes('gender')) finalValues[f] = finalValues[f] || form.gender || ''
+          else if (lowerF.includes('address')) finalValues[f] = finalValues[f] || ptAddress
+          else if (lowerF.includes('city') || lowerF.includes('town')) finalValues[f] = finalValues[f] || printCity
+          else if (lowerF.includes('state')) finalValues[f] = finalValues[f] || printState
+          else if (lowerF.includes('amount') || lowerF.includes('fee') || lowerF.includes('charge')) {
+             finalValues[f] = finalValues[f] || (form.amount ? `${form.amount} (${form.payment_mode})` : '')
+          }
         }
         const params = new URLSearchParams(finalValues).toString()
         window.open(`/print-slip?${params}`, '_blank')
       } else {
-        setPrintVisit({ ...payload, patient_name: ptName, doc_name: selectedDoc?.name || '' })
+        setPrintVisit({
+          ...payload,
+          patient_name: ptName,
+          doc_name: selectedDoc?.name || '',
+          patient_uhid: payload?.patient_uhid || matchedPatient?.uhid || '',
+          patient_city: payload?.patient_city || form.city || '',
+          patient_state: payload?.patient_state || form.state || '',
+          patient_guardian_name: payload?.patient_guardian_name || form.guardian_name || '',
+          token_number: tokenNum,
+          amount: form.amount || '',
+        })
       }
 
       setForm(emptyForm)
@@ -904,6 +949,10 @@ function OPDSection({ rooms }) {
             <input value={form.patient_name} onChange={e => setForm(f => ({ ...f, patient_name: e.target.value }))} placeholder="Full Name" className={inpFilled} />
           </div>
           <div className="col-span-3">
+            <label className={lblFilled}>Guardian / Relative Name</label>
+            <input value={form.guardian_name} onChange={e => setForm(f => ({ ...f, guardian_name: e.target.value }))} placeholder="Guardian name" className={inpFilled} />
+          </div>
+          <div className="col-span-3">
             <label className={lblFilled}>Age</label>
             <input type="number" min="0" max="150" value={form.age} onChange={e => setForm(f => ({ ...f, age: e.target.value }))} placeholder="yrs" className={inpFilled} />
           </div>
@@ -999,13 +1048,22 @@ function OPDSection({ rooms }) {
             </div>
           </div>
 
-          <div className="col-span-3">
+          <div className="col-span-2">
             <label className={lbl}>Visit date</label>
             <input type="date" value={form.visit_date} onChange={e => setForm(f => ({ ...f, visit_date: e.target.value }))} className={inp} />
           </div>
           <div className="col-span-3">
             <label className={lbl}>Doctor</label>
-            <select value={form.doctor} onChange={e => setForm(f => ({ ...f, doctor: e.target.value }))} className={inp}>
+            <select value={form.doctor} onChange={e => {
+              const selectedDocId = e.target.value
+              const selectedDoc = doctors.find(d => (d.user || d.id) === selectedDocId)
+              const fee = selectedDoc?.consultation_fee
+              setForm(f => ({
+                ...f,
+                doctor: selectedDocId,
+                amount: fee && Number(fee) > 0 ? String(Number(fee)) : f.amount,
+              }))
+            }} className={inp}>
               <option value="">Walk-in / Any</option>
               {doctors.map(d => (
                 <option key={d.user || d.id} value={d.user || d.id}>
@@ -1014,32 +1072,36 @@ function OPDSection({ rooms }) {
               ))}
             </select>
           </div>
-          <div className="col-span-6">
+          <div className="col-span-2">
+            <label className={lbl}>Amount (₹)</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-sm">₹</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.amount}
+                onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                placeholder="0"
+                className={`${inp} pl-7`}
+              />
+            </div>
+          </div>
+          <div className="col-span-2">
+            <label className={lbl}>Payment</label>
+            <select value={form.payment_mode} onChange={e => setForm(f => ({ ...f, payment_mode: e.target.value }))} className={inp}>
+              <option value="cash">Cash</option>
+              <option value="upi">UPI</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div className="col-span-3">
             <label className={lbl}>Chief complaint</label>
             <input value={form.chief_complaint} onChange={e => setForm(f => ({ ...f, chief_complaint: e.target.value }))} placeholder="e.g. fever, follow-up" className={inp} />
           </div>
 
-          {customFields.length > 0 && (
-            <div className="col-span-12 mt-2 pt-4 border-t border-gray-100">
-              <h4 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <Printer size={16} className="text-emerald-600" /> Additional A4 OPD Fields
-              </h4>
-              <div className="grid grid-cols-2 gap-3">
-                {customFields.map(f => (
-                  <div key={f} className="flex flex-col">
-                    <label className={`${lblFilled} capitalize tracking-tight`}>{f}</label>
-                    <input
-                      type="text"
-                      className={inpFilled}
-                      value={templateValues[f] || ''}
-                      onChange={e => setTemplateValues({...templateValues, [f]: e.target.value})}
-                      placeholder={f}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+
+
         </div>
 
         {/* Submit */}
@@ -1128,7 +1190,10 @@ function OPDSection({ rooms }) {
                     </div>
                   </div>
                   <div className="col-span-4 pl-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">{v.patient_name || 'Patient'}</p>
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {v.patient_name || 'Patient'}
+                      {v.patient_uhid && <span className="ml-1 text-[11px] font-mono text-gray-400">({v.patient_uhid})</span>}
+                    </p>
                   </div>
                   <div className="col-span-3 min-w-0">
                     <p className="text-xs text-gray-500 truncate">{v.doc_name || '—'}</p>
@@ -1805,21 +1870,11 @@ function IPDSection({ mode }) {
                     <CheckCircle size={12} /> Discharge
                   </button>
                 )}
-                {a.status === 'admitted' && (
-                  <button onClick={() => setShowPayments(a)}
-                    className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-lg hover:bg-amber-200 font-semibold flex items-center gap-1">
-                    <IndianRupee size={12} /> Payments
-                  </button>
-                )}
-                {a.status === 'admitted' && (
-                  <button onClick={() => setShowAddCharge(a)}
-                    className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg hover:bg-blue-200 font-semibold flex items-center gap-1">
-                    <Plus size={12} /> Add Charge
-                  </button>
-                )}
                 <button onClick={() => setSelected(selected?.id === a.id ? null : a)}
-                  className="text-gray-400 hover:text-blue-500">
-                  <Eye size={16} />
+                  className="shrink-0 text-gray-400 hover:text-blue-500 rounded-xl px-2">
+                  <div className="flex items-center gap-1.5 text-xs bg-gray-100 hover:bg-blue-100 text-gray-700 hover:text-blue-700 px-3 py-1.5 rounded-lg font-bold transition-colors">
+                    <FileText size={14} /> Open Ledger / Pay
+                  </div>
                 </button>
               </div>
             ))}
@@ -1827,48 +1882,8 @@ function IPDSection({ mode }) {
         )}
       </div>
 
-      {showPayments && (
-        <AdmissionPaymentsModal
-          admission={showPayments}
-          onClose={() => setShowPayments(null)}
-        />
-      )}
-
-      {showAddCharge && (
-        <AddChargeModal
-          admission={showAddCharge}
-          onClose={() => setShowAddCharge(null)}
-        />
-      )}
-
       {selected && (
-        <div className="bg-white rounded-2xl p-4 shadow-sm border border-blue-100">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-gray-800">Admission Details</h3>
-            <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-red-500"><XCircle size={18} /></button>
-          </div>
-          <div className="grid grid-cols-3 gap-3 text-sm">
-            {[
-              ['Patient', selected.patient_name || selected.patient],
-              ['Ward', selected.ward_name || '—'],
-              ['Bed', selected.bed_code || '—'],
-              ['Admission Date', selected.admission_date],
-              ['Expected Discharge', selected.expected_discharge_date || '—'],
-              ['Status', selected.status],
-            ].map(([label, value]) => (
-              <div key={label} className="bg-gray-50 rounded-lg p-2">
-                <p className="text-xs text-gray-400">{label}</p>
-                <p className="font-semibold text-gray-700 capitalize">{value}</p>
-              </div>
-            ))}
-          </div>
-          {selected.admission_diagnosis && (
-            <p className="mt-3 text-sm text-gray-600"><span className="font-semibold">Diagnosis:</span> {selected.admission_diagnosis}</p>
-          )}
-          {selected.admission_notes && (
-            <p className="mt-1 text-sm text-gray-600"><span className="font-semibold">Notes:</span> {selected.admission_notes}</p>
-          )}
-        </div>
+        <AdmissionLedgerModal admission={selected} onClose={() => setSelected(null)} />
       )}
     </div>
   )
@@ -3943,6 +3958,747 @@ function Sidebar({ activeSection, onSelect }) {
   )
 }
 
+// ─── OPD Slips / History ────────────────────────────────────────────────────────
+function OpdSlipsSection() {
+  const [visits, setVisits] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const [editingVisit, setEditingVisit] = useState(null)
+  const [doctors, setDoctors] = useState([])
+  const PAGE_SIZE = 50
+  const debounceRef = useRef(null)
+
+  useEffect(() => {
+    api.get('/doctor-profiles/?limit=500').then(({ data }) => setDoctors(Array.isArray(data?.data) ? data.data : (data?.results || data || []))).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    setPage(0)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => fetchVisits(0, search), 300)
+    return () => clearTimeout(debounceRef.current)
+  }, [search])
+
+  useEffect(() => { fetchVisits(page, search) }, [page])
+
+  async function fetchVisits(pg = 0, q = '') {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ limit: PAGE_SIZE, offset: pg * PAGE_SIZE, ordering: '-created_at' })
+      if (q.trim()) params.set('search', q.trim())
+      const { data } = await api.get(`/opd-visits/?${params}`)
+      setVisits(data?.data || data?.results || data || [])
+      setTotal(data?.count ?? data?.total ?? (data?.data?.length ?? 0))
+    } catch { toast.error('Failed to load OPD slips') }
+    finally { setLoading(false) }
+  }
+
+  async function handleSaveEdit(e) {
+    e.preventDefault()
+    try {
+      await api.patch(`/opd-visits/${editingVisit.id}/`, {
+        doctor_user: editingVisit.doctor_user || null,
+        visit_reason: editingVisit.visit_reason || '',
+        status: editingVisit.status,
+        visit_date: editingVisit.visit_date,
+        amount: editingVisit.amount || null,
+        payment_mode: editingVisit.payment_mode || 'cash',
+      })
+      toast.success('OPD Slip updated!')
+      setEditingVisit(null)
+      fetchVisits(page, search)
+    } catch {
+      toast.error('Failed to update OPD slip')
+    }
+  }
+
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+  const statusColors = { waiting: 'bg-amber-100 text-amber-800', in_progress: 'bg-blue-100 text-blue-800', completed: 'bg-emerald-100 text-emerald-800', cancelled: 'bg-red-100 text-red-800' }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        {[['Total Slips', total, 'text-gray-900'], ['Showing', visits.length, 'text-emerald-600']].map(([l, v, c]) => (
+          <div key={l} className="bg-white rounded-xl p-3 shadow-sm border border-gray-100 flex items-center gap-3">
+             <div className="min-w-0">
+               <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">{l}</p>
+               <p className={`text-2xl font-black ${c}`}>{v}</p>
+             </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden relative">
+        <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-3 bg-gray-50/60">
+          <Search size={15} className="text-gray-400 shrink-0" strokeWidth={2} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search slips by patient, UHID…" className="flex-1 text-sm outline-none bg-transparent placeholder:text-gray-400" />
+          {loading && <span className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+          <button onClick={() => fetchVisits(page, search)} className="text-gray-400 hover:text-emerald-600 shrink-0"><RefreshCw size={14} strokeWidth={2} /></button>
+          <span className="text-xs text-gray-400 shrink-0">{total} slips</span>
+        </div>
+        
+        <div className="grid grid-cols-12 px-4 py-2 bg-gray-100/80 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+          <div className="col-span-2">Date/OPD No</div>
+          <div className="col-span-3">Patient</div>
+          <div className="col-span-2">Doctor</div>
+          <div className="col-span-2">Complaint</div>
+          <div className="col-span-2 text-center">Status / Amt</div>
+          <div className="col-span-1 text-right">Action</div>
+        </div>
+
+        <div className="divide-y divide-gray-50 max-h-[calc(100vh-360px)] overflow-y-auto custom-scrollbar">
+          {loading ? <div className="py-12 text-center text-sm text-gray-400">Loading…</div> : visits.length === 0 ? <div className="py-12 text-center text-sm text-gray-400">No OPD slips found</div> : visits.map((v) => (
+             <div key={v.id} className="grid grid-cols-12 px-4 py-3 items-center text-sm hover:bg-gray-50/50 transition-colors">
+                <div className="col-span-2 flex flex-col items-start min-w-0 pr-2">
+                  <span className="font-bold text-gray-800">{v.visit_date}</span>
+                  <span className="text-xs text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 mt-0.5 rounded">#{v.queue_number || v.token_number}</span>
+                </div>
+                <div className="col-span-3 min-w-0 pr-2">
+                  <p className="font-bold text-gray-800 truncate">{v.patient_name || 'Patient'}</p>
+                  <p className="text-[10px] text-gray-500 font-mono truncate">{v.patient_uhid}</p>
+                </div>
+                <div className="col-span-2 min-w-0 pr-2">
+                  <span className="text-gray-600 truncate block">{v.doctor_name || '-'}</span>
+                </div>
+                <div className="col-span-2 min-w-0 pr-2 text-gray-500 text-xs line-clamp-2">
+                  {v.visit_reason || '-'}
+                </div>
+                <div className="col-span-2 flex flex-col items-center gap-1">
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${statusColors[v.status] || 'bg-gray-100 text-gray-800'}`}>
+                    {v.status.replace('_', ' ')}
+                  </span>
+                  {v.amount && <span className="text-xs font-bold text-gray-600 border border-gray-200 px-1.5 rounded bg-gray-50 flex items-center"><IndianRupee size={10} className="mr-0.5"/> {v.amount} <span className="ml-1 text-[9px] uppercase">({v.payment_mode || 'CASH'})</span></span>}
+                </div>
+                <div className="col-span-1 text-right">
+                  <button onClick={() => setEditingVisit(v)} className="text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors">Edit</button>
+                </div>
+             </div>
+          ))}
+        </div>
+
+        {totalPages > 1 && (
+          <div className="p-2 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between text-sm">
+            <button disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))} className="px-3 py-1.5 font-medium text-gray-600 hover:bg-white hover:shadow-sm rounded-lg disabled:opacity-50 transition-all">Prev</button>
+            <span className="text-gray-500 font-bold text-xs">Page {page + 1} of {totalPages}</span>
+            <button disabled={page >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} className="px-3 py-1.5 font-medium text-gray-600 hover:bg-white hover:shadow-sm rounded-lg disabled:opacity-50 transition-all">Next</button>
+          </div>
+        )}
+      </div>
+
+      {editingVisit && (
+        <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <form onSubmit={handleSaveEdit} className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-full">
+            <div className="bg-emerald-600 px-4 py-3 flex items-center justify-between pointer-events-none">
+              <h2 className="text-white font-bold pointer-events-auto">Edit OPD Slip</h2>
+              <button type="button" onClick={() => setEditingVisit(null)} className="text-white/80 hover:text-white pointer-events-auto"><X size={18} /></button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-4">
+               <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Visit Date</label>
+                  <input type="date" required value={editingVisit.visit_date} onChange={e => setEditingVisit({...editingVisit, visit_date: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+               </div>
+               <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Doctor</label>
+                  <select value={editingVisit.doctor_user || ''} onChange={e => setEditingVisit({...editingVisit, doctor_user: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
+                     <option value="">-- No Doctor --</option>
+                     {doctors.map(d => <option key={d.id || d.user} value={d.id || d.user}>Dr. {d.name || d.first_name || d.email}</option>)}
+                  </select>
+               </div>
+               <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Chief Complaint</label>
+                  <input type="text" value={editingVisit.visit_reason || ''} onChange={e => setEditingVisit({...editingVisit, visit_reason: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+               </div>
+               <div className="grid grid-cols-2 gap-3">
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Amount</label>
+                    <input type="number" step="0.01" value={editingVisit.amount || ''} onChange={e => setEditingVisit({...editingVisit, amount: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" placeholder="e.g. 500" />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Payment</label>
+                    <select value={editingVisit.payment_mode || 'cash'} onChange={e => setEditingVisit({...editingVisit, payment_mode: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
+                       <option value="cash">Cash</option>
+                       <option value="upi">UPI</option>
+                       <option value="other">Other</option>
+                    </select>
+                 </div>
+               </div>
+               <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Status</label>
+                  <select value={editingVisit.status || 'waiting'} onChange={e => setEditingVisit({...editingVisit, status: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
+                     <option value="waiting">Waiting</option>
+                     <option value="in_progress">In Progress</option>
+                     <option value="completed">Completed</option>
+                     <option value="cancelled">Cancelled</option>
+                  </select>
+               </div>
+            </div>
+            <div className="p-4 border-t border-gray-100 flex gap-2 justify-end bg-gray-50 mt-auto shrink-0">
+               <button type="button" onClick={() => setEditingVisit(null)} className="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+               <button type="submit" className="px-4 py-2 rounded-xl text-sm font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">Save Changes</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── A4 Payment Slip (Advance / Service) ─────────────────────────────────────
+function PrintMiniReceipt({ admission, data, type, onClose }) {
+  useEffect(() => {
+    // Wait for DOM to paint, then print. Only close AFTER the print dialog is dismissed.
+    const timer = setTimeout(() => {
+      window.print()
+    }, 300)
+
+    function handleAfterPrint() {
+      onClose()
+    }
+    window.addEventListener('afterprint', handleAfterPrint)
+
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('afterprint', handleAfterPrint)
+    }
+  }, [])
+
+  const label     = type === 'advance' ? 'ADVANCE PAYMENT RECEIPT' : 'PAYMENT RECEIPT'
+  const modeLabel = { cash: 'Cash', upi: 'UPI / Online Transfer', credit: 'Credit / Due', other: 'Other' }
+  const isPaid    = data.mode !== 'credit'
+  const now       = format(new Date(), 'dd/MM/yyyy hh:mm a')
+
+  return (
+    // The outer div covers the full viewport so during printing nothing else bleeds in
+    <div id="__receipt_root" className="fixed inset-0 z-[600] bg-white overflow-y-auto print:overflow-visible">
+      {/* Cancel button — hidden during print */}
+      <div className="flex justify-end p-4 print:hidden">
+        <button onClick={onClose}
+          className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-5 py-2 rounded-xl font-bold text-sm transition-colors">
+          ✕ Cancel / Close
+        </button>
+      </div>
+
+      {/* A4 receipt sheet */}
+      <div style={{ width: '210mm', minHeight: '297mm', margin: '0 auto', background: '#fff', color: '#000', fontFamily: 'Arial, sans-serif', fontSize: '13px', padding: '20mm', boxSizing: 'border-box' }}
+        className="shadow-2xl print:shadow-none">
+
+        {/* ── Hospital Header ── */}
+        <div style={{ textAlign: 'center', borderBottom: '3px solid #1e3a5f', paddingBottom: 16, marginBottom: 20 }}>
+          <p style={{ fontSize: 26, fontWeight: 900, letterSpacing: 2, color: '#1e3a5f', margin: 0 }}>CUREVICE HOSPITAL</p>
+          <p style={{ fontSize: 13, color: '#555', marginTop: 4 }}>IPD Billing — Payment Slip</p>
+        </div>
+
+        {/* ── Slip Title ── */}
+        <div style={{ background: '#1e3a5f', color: '#fff', textAlign: 'center', padding: '10px 0', borderRadius: 6, marginBottom: 24 }}>
+          <p style={{ fontWeight: 800, fontSize: 15, letterSpacing: 1, margin: 0 }}>{label}</p>
+        </div>
+
+        {/* ── Patient & Ref Info ── */}
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 20 }}>
+          <tbody>
+            {[
+              ['Patient Name', (admission.patient_name || '—').toUpperCase()],
+              ['Ward / Room',  `${admission.ward_name || '—'} / ${admission.room_name || '—'}`],
+              ['Bed No.',      admission.bed_code || '—'],
+              ['Admission Date', admission.admission_date || '—'],
+              ['Receipt Date', now],
+              data.invoice_no ? ['Reference No.', data.invoice_no] : null,
+            ].filter(Boolean).map(([k, v]) => (
+              <tr key={k}>
+                <td style={{ padding: '7px 12px', fontWeight: 700, color: '#444', width: '40%', borderBottom: '1px solid #eee' }}>{k}</td>
+                <td style={{ padding: '7px 12px', color: '#111', borderBottom: '1px solid #eee' }}>{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {/* ── Charge Details ── */}
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 28 }}>
+          <thead>
+            <tr style={{ background: '#f3f4f6' }}>
+              <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: '#444', borderBottom: '2px solid #ddd' }}>Description</th>
+              <th style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: '#444', borderBottom: '2px solid #ddd', width: '30%' }}>Amount (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>
+                {data.description || (type === 'advance' ? 'Advance Payment' : 'Service Charge')}
+              </td>
+              <td style={{ padding: '12px', textAlign: 'right', fontWeight: 700, fontSize: 16, borderBottom: '1px solid #eee' }}>
+                ₹ {parseFloat(data.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr style={{ background: isPaid ? '#f0fdf4' : '#fefce8' }}>
+              <td style={{ padding: '12px', fontWeight: 800, fontSize: 14 }}>
+                Total {isPaid ? 'Paid' : 'Charged (Credit)'}
+              </td>
+              <td style={{ padding: '12px', textAlign: 'right', fontWeight: 900, fontSize: 18, color: isPaid ? '#16a34a' : '#b45309' }}>
+                ₹ {parseFloat(data.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+
+        {/* ── Payment Mode & Status ── */}
+        <div style={{ display: 'flex', gap: 16, marginBottom: 40 }}>
+          <div style={{ flex: 1, border: '1px solid #ddd', borderRadius: 8, padding: '12px 16px' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '0 0 4px 0' }}>Payment Mode</p>
+            <p style={{ fontWeight: 800, fontSize: 15, margin: 0 }}>{modeLabel[data.mode] || data.mode}</p>
+          </div>
+          <div style={{ flex: 1, border: isPaid ? '2px solid #16a34a' : '2px solid #d97706', borderRadius: 8, padding: '12px 16px', background: isPaid ? '#f0fdf4' : '#fffbeb' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '0 0 4px 0' }}>Status</p>
+            <p style={{ fontWeight: 900, fontSize: 16, margin: 0, color: isPaid ? '#16a34a' : '#d97706' }}>{isPaid ? '✓ PAID' : '• CREDIT / DUE'}</p>
+          </div>
+        </div>
+
+        {/* ── Signature line ── */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 40 }}>
+          <div style={{ textAlign: 'center', width: '40%' }}>
+            <div style={{ borderTop: '1px solid #999', paddingTop: 6, fontSize: 11, color: '#666' }}>Patient / Attendant Signature</div>
+          </div>
+          <div style={{ textAlign: 'center', width: '40%' }}>
+            <div style={{ borderTop: '1px solid #999', paddingTop: 6, fontSize: 11, color: '#666' }}>Authorised Signatory</div>
+          </div>
+        </div>
+
+        {/* ── Footer ── */}
+        <div style={{ marginTop: 40, paddingTop: 12, borderTop: '1px solid #ddd', textAlign: 'center', fontSize: 11, color: '#999' }}>
+          <p style={{ margin: 0 }}>This is a computer-generated document. For queries, please contact the reception.</p>
+          <p style={{ margin: '4px 0 0 0' }}>Generated by Curevice IPD Billing System · {now}</p>
+        </div>
+      </div>
+
+      {/* Print-only styles to force A4 and hide everything else */}
+      <style>{`
+        @media print {
+          @page { size: A4 portrait; margin: 0; }
+          body > *:not(#__receipt_root) { display: none !important; }
+          .print\\:hidden { display: none !important; }
+          .print\\:shadow-none { box-shadow: none !important; }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+// ─── IPD Ledger Modal ────────────────────────────────────────────────────────
+function AdmissionLedgerModal({ admission, onClose }) {
+  const [ledger, setLedger]         = useState(null)
+  const [loading, setLoading]       = useState(true)
+  const [tab, setTab]               = useState('advance')
+  const [submitting, setSubmitting] = useState(false)
+  const [showPrint, setShowPrint]   = useState(false)
+  const [receipt, setReceipt]       = useState(null)
+
+  // Advance form state
+  const [advAmount, setAdvAmount] = useState('')
+  const [advMode, setAdvMode]     = useState('cash')
+  const [advRef, setAdvRef]       = useState('')
+  const [advPrint, setAdvPrint]   = useState(true)
+
+  // Service charge form state
+  const [chgDesc, setChgDesc]     = useState('')
+  const [chgAmount, setChgAmount] = useState('')
+  const [chgMode, setChgMode]     = useState('credit')
+  const [chgPrint, setChgPrint]   = useState(false)
+
+  useEffect(() => { fetchLedger() }, [admission.id])
+
+  async function fetchLedger() {
+    setLoading(true)
+    try {
+      const { data } = await api.get(`/ipd-admissions/${admission.id}/ledger/`)
+      setLedger(data)
+    } catch { toast.error('Failed to load ledger') }
+    finally { setLoading(false) }
+  }
+
+  async function handleAdvance(e) {
+    e.preventDefault()
+    if (!advAmount) return
+    setSubmitting(true)
+    try {
+      const { data } = await api.post(`/ipd-admissions/${admission.id}/capture-advance/`, {
+        amount: advAmount, payment_mode: advMode, reference: advRef
+      })
+      toast.success('Advance captured!')
+      fetchLedger()
+      if (advPrint) setReceipt({ type: 'advance', data: { amount: advAmount, mode: advMode, invoice_no: data.invoice_no, description: 'Advance Payment' } })
+      setAdvAmount(''); setAdvRef('')
+    } catch { toast.error('Failed to capture advance') }
+    finally { setSubmitting(false) }
+  }
+
+  async function handleCharge(e) {
+    e.preventDefault()
+    if (!chgDesc || !chgAmount) return
+    setSubmitting(true)
+    try {
+      const { data } = await api.post(`/ipd-admissions/${admission.id}/add-charge/`, {
+        description: chgDesc, amount: chgAmount, payment_mode: chgMode
+      })
+      toast.success(chgMode === 'credit' ? 'Charge added' : 'Charge added & paid!')
+      fetchLedger()
+      if (chgPrint) setReceipt({ type: 'charge', data: { amount: chgAmount, mode: chgMode, invoice_no: data.invoice_no, description: chgDesc } })
+      setChgDesc(''); setChgAmount(''); setChgMode('credit')
+    } catch { toast.error('Failed to add charge') }
+    finally { setSubmitting(false) }
+  }
+
+  function applyRoomRentDiscount() {
+    setTab('charge')
+    setChgDesc('Room Rent Discount')
+    setChgAmount('')
+    setChgMode('credit')
+    setTimeout(() => document.getElementById('chg-amount-input')?.focus(), 80)
+  }
+
+  const inp = 'w-full border border-gray-200 rounded-xl p-2.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-gray-50 hover:bg-white transition-colors'
+
+
+  if (receipt) return <PrintMiniReceipt admission={admission} data={receipt.data} type={receipt.type} onClose={() => setReceipt(null)} />
+  if (showPrint && ledger) return <PrintIpdLedger admission={admission} ledger={ledger} onClose={() => setShowPrint(false)} />
+
+  return (
+    <div className="fixed inset-0 z-[400] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[92vh]">
+
+        {/* Header */}
+        <div className="bg-gradient-to-r from-blue-700 to-blue-500 px-6 py-4 flex items-center justify-between shadow-sm shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-white">
+              <Activity size={20} strokeWidth={2.5} />
+            </div>
+            <div>
+              <h3 className="text-white font-bold text-lg leading-tight">{admission.patient_name || '--'}</h3>
+              <p className="text-blue-100 text-xs">IPD Ledger · {admission.ward_name} · Bed {admission.bed_code} · Adm: {admission.admission_date}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setShowPrint(true)} className="flex items-center gap-2 bg-white/20 hover:bg-white/30 text-white rounded-xl px-4 py-2 text-sm font-bold transition-colors">
+              <Printer size={16} /> Print A4 Bill
+            </button>
+            <button onClick={onClose} className="text-white/70 hover:text-white transition-colors">
+              <XCircle size={24} strokeWidth={1.5} />
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center py-20">
+            <RefreshCw size={24} className="text-blue-500 animate-spin" />
+          </div>
+        ) : ledger ? (
+          <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 lg:grid-cols-5 gap-5 bg-gray-50/40">
+
+            {/* ── Left: Account Statement (3 cols) ── */}
+            <div className="lg:col-span-3 flex flex-col gap-4">
+              {/* Summary chips */}
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Total Charges', val: ledger.total_charges, color: 'text-gray-800', bg: 'bg-white', border: 'border-gray-200' },
+                  { label: 'Total Paid',    val: ledger.total_paid,    color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
+                  { label: 'Balance Due',   val: ledger.balance_due,
+                    color:  parseFloat(ledger.balance_due) > 0 ? 'text-red-500' : 'text-emerald-500',
+                    bg:     parseFloat(ledger.balance_due) > 0 ? 'bg-red-50'    : 'bg-emerald-50',
+                    border: parseFloat(ledger.balance_due) > 0 ? 'border-red-200' : 'border-emerald-200' },
+                ].map(s => (
+                  <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-3 shadow-sm`}>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-0.5">{s.label}</p>
+                    <p className={`text-xl font-black ${s.color}`}>₹{parseFloat(s.val).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Table */}
+              <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col flex-1">
+                <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                  <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText size={13} className="text-blue-500" /> Account Statement
+                  </span>
+                  <button onClick={fetchLedger} className="text-gray-400 hover:text-blue-500 transition-colors"><RefreshCw size={13} /></button>
+                </div>
+                <div className="overflow-x-auto flex-1">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-gray-50 text-[10px] font-bold text-gray-500 uppercase tracking-wider border-b border-gray-100">
+                      <tr>
+                        <th className="px-4 py-2.5">Date</th>
+                        <th className="px-4 py-2.5">Description</th>
+                        <th className="px-4 py-2.5 text-right">Charges (₹)</th>
+                        <th className="px-4 py-2.5 text-right text-emerald-600">Paid (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {[...ledger.charges, ...ledger.payments]
+                        .sort((a, b) => new Date(a.date) - new Date(b.date))
+                        .map((item, i) => {
+                          const isDiscount = item.type !== 'payment' && parseFloat(item.amount) < 0
+                          return (
+                            <tr key={`${item.type}-${item.id}-${i}`} className={`hover:bg-gray-50/80 transition-colors ${isDiscount ? 'bg-amber-50/40' : ''}`}>
+                              <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">{format(new Date(item.date), 'dd/MM/yy HH:mm')}</td>
+                              <td className="px-4 py-2.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {item.type === 'room_rent'  && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold">RENT</span>}
+                                  {isDiscount                 && <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold">DISCOUNT</span>}
+                                  <span className={`text-xs font-semibold ${item.type === 'payment' ? 'text-emerald-700' : isDiscount ? 'text-amber-700' : 'text-gray-800'}`}>
+                                    {item.description}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
+                                {item.type !== 'payment'
+                                  ? <span className={isDiscount ? 'text-amber-600 font-bold' : 'text-gray-700'}>{parseFloat(item.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  : <span className="text-gray-300">—</span>}
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-medium text-emerald-600 whitespace-nowrap">
+                                {item.type === 'payment'
+                                  ? parseFloat(item.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })
+                                  : <span className="text-gray-300">—</span>}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      <tr className="bg-gray-50 border-t border-gray-200 text-xs font-bold text-gray-600 uppercase">
+                        <td colSpan={2} className="px-4 py-2.5 text-right">Total</td>
+                        <td className="px-4 py-2.5 text-right text-gray-800">₹{parseFloat(ledger.total_charges).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                        <td className="px-4 py-2.5 text-right text-emerald-600">₹{parseFloat(ledger.total_paid).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Room rent discount shortcut */}
+              {parseFloat(ledger.room_rent) > 0 && (
+                <button onClick={applyRoomRentDiscount}
+                  className="self-start flex items-center gap-2 text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 px-4 py-2 rounded-xl font-bold border border-amber-200 transition-colors">
+                  <Tag size={13} /> Apply Room Rent Discount
+                </button>
+              )}
+            </div>
+
+            {/* ── Right: Action Panel (2 cols) ── */}
+            <div className="lg:col-span-2 space-y-4">
+
+              {/* Tabs */}
+              <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+                <div className="grid grid-cols-2">
+                  {[
+                    { id: 'advance', label: 'Capture Advance', icon: <IndianRupee size={14} />, active: 'text-emerald-700 border-emerald-500 bg-emerald-50' },
+                    { id: 'charge',  label: 'Add Service',     icon: <Plus size={14} />,        active: 'text-blue-700 border-blue-500 bg-blue-50'       },
+                  ].map(t => (
+                    <button key={t.id} onClick={() => setTab(t.id)}
+                      className={`py-3 text-sm font-bold flex items-center justify-center gap-2 transition-colors border-b-2 ${tab === t.id ? t.active : 'text-gray-500 border-transparent hover:text-gray-700 hover:bg-gray-50'}`}>
+                      {t.icon} {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="p-4">
+                  {/* ─── Advance Tab ─── */}
+                  {tab === 'advance' && (
+                    <form onSubmit={handleAdvance} className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Amount (₹) *</label>
+                        <input type="number" step="0.01" min="0.01" value={advAmount}
+                          onChange={e => setAdvAmount(e.target.value)} required placeholder="e.g. 5000"
+                          className={`mt-1 ${inp}`} />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Payment Mode *</label>
+                        <div className="grid grid-cols-3 gap-2 mt-1">
+                          {['cash', 'upi', 'other'].map(m => (
+                            <button key={m} type="button" onClick={() => setAdvMode(m)}
+                              className={`py-2 rounded-xl text-xs font-bold border transition-colors capitalize ${advMode === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-emerald-400'}`}>
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Reference / Txn ID</label>
+                        <input value={advRef} onChange={e => setAdvRef(e.target.value)} placeholder="Optional (UPI Ref etc.)"
+                          className={`mt-1 ${inp}`} />
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-600 font-medium">
+                        <input type="checkbox" checked={advPrint} onChange={e => setAdvPrint(e.target.checked)}
+                          className="w-4 h-4 accent-emerald-600 rounded" />
+                        Print Receipt After Save
+                      </label>
+                      <button type="submit" disabled={submitting}
+                        className="w-full py-3 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-sm text-sm">
+                        {submitting ? 'Processing…' : <><IndianRupee size={16} /> Capture Advance</>}
+                      </button>
+                    </form>
+                  )}
+
+                  {/* ─── Service Charge Tab ─── */}
+                  {tab === 'charge' && (
+                    <form onSubmit={handleCharge} className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Description *</label>
+                        <input value={chgDesc} onChange={e => setChgDesc(e.target.value)} required
+                          placeholder="e.g. Doctor Visit, Surgery, Medicine"
+                          className={`mt-1 ${inp}`} />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Amount (₹) *</label>
+                        <input id="chg-amount-input" type="number" step="0.01" value={chgAmount}
+                          onChange={e => setChgAmount(e.target.value)} required
+                          placeholder="Negative value = discount"
+                          className={`mt-1 ${inp}`} />
+                        <p className="text-[10px] text-gray-400 mt-1 italic">Use a negative amount to apply a discount/room rent reduction</p>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Payment Status</label>
+                        <div className="grid grid-cols-2 gap-2 mt-1">
+                          {[
+                            { val: 'credit', label: 'Credit (Due)' },
+                            { val: 'cash',   label: '💵 Cash Paid'  },
+                            { val: 'upi',    label: '📱 UPI Paid'   },
+                            { val: 'other',  label: 'Other Paid'   },
+                          ].map(m => (
+                            <button key={m.val} type="button" onClick={() => setChgMode(m.val)}
+                              className={`py-2 rounded-xl text-xs font-bold border transition-colors ${chgMode === m.val ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-blue-400'}`}>
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-600 font-medium">
+                        <input type="checkbox" checked={chgPrint} onChange={e => setChgPrint(e.target.checked)}
+                          className="w-4 h-4 accent-blue-600 rounded" />
+                        Print Receipt After Save
+                      </label>
+                      <button type="submit" disabled={submitting}
+                        className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-sm text-sm">
+                        {submitting ? 'Processing…' : <><Plus size={16} /> {chgMode === 'credit' ? 'Add Charge (Credit)' : 'Add & Pay'}</>}
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </div>
+
+              {/* Room rent info */}
+              {parseFloat(ledger.room_rent) > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+                  <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-1">Auto Room Rent</p>
+                  <p className="font-black text-blue-800 text-lg">₹{parseFloat(ledger.room_rent).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                  <p className="text-blue-600 text-xs mt-0.5">{ledger.days} day{ledger.days !== 1 ? 's' : ''} · Bed {admission.bed_code}</p>
+                </div>
+              )}
+            </div>
+
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+
+function PrintIpdLedger({ admission, ledger, onClose }) {
+  const printRef = useRef(null)
+  
+  useEffect(() => {
+    setTimeout(() => {
+      if (printRef.current) {
+        window.print()
+        onClose()
+      }
+    }, 500)
+  }, [])
+
+  const items = [...(ledger.charges || []), ...(ledger.payments || [])]
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+
+  return (
+    <div className="fixed inset-0 z-[500] bg-white flex justify-center overflow-y-auto print:p-0 p-8">
+      <div className="absolute top-4 right-4 print:hidden">
+        <button onClick={onClose} className="bg-gray-100 text-gray-600 px-4 py-2 rounded-xl font-bold">Cancel</button>
+      </div>
+      
+      <div ref={printRef} className="w-[210mm] min-h-[297mm] bg-white text-black p-[20mm] font-sans mx-auto shadow-2xl print:shadow-none text-sm">
+        {/* Header */}
+        <div className="flex justify-between items-end border-b-2 border-gray-800 pb-4 mb-6">
+          <div>
+            <h1 className="text-3xl font-black mb-1">CUREVICE IPD</h1>
+            <p className="text-gray-600 font-medium">Inpatient Bill & Ledger Statement</p>
+          </div>
+          <div className="text-right">
+            <p className="font-bold">Date: {format(new Date(), 'dd/MM/yyyy HH:mm')}</p>
+            <p className="font-mono text-xs text-gray-500 mt-1">Ref: ADM-{admission.id.split('-')[0].toUpperCase()}</p>
+          </div>
+        </div>
+
+        {/* Patient Details */}
+        <div className="border border-gray-300 p-4 mb-6 grid grid-cols-2 gap-x-8 gap-y-2 rounded-lg">
+          <div><span className="text-gray-500 w-24 inline-block">Patient Name:</span> <span className="font-bold uppercase">{admission.patient_name || '--'}</span></div>
+          <div><span className="text-gray-500 w-24 inline-block">Admission Date:</span> <span className="font-medium">{format(new Date(admission.admission_date), 'dd/MM/yyyy')}</span></div>
+          <div><span className="text-gray-500 w-24 inline-block">Ward/Room:</span> <span className="font-medium">{admission.ward_name} / {admission.room_name}</span></div>
+          <div><span className="text-gray-500 w-24 inline-block">Bed:</span> <span className="font-medium">{admission.bed_code}</span></div>
+          <div className="col-span-2"><span className="text-gray-500 w-24 inline-block">Diagnosis:</span> <span className="font-medium">{admission.admission_diagnosis || 'N/A'}</span></div>
+        </div>
+
+        {/* Statement Table */}
+        <table className="w-full text-left mb-8 border-collapse">
+          <thead>
+            <tr className="border-b-2 border-gray-800">
+              <th className="py-2.5 font-bold text-gray-600 uppercase text-xs">Date</th>
+              <th className="py-2.5 font-bold text-gray-600 uppercase text-xs">Description</th>
+              <th className="py-2.5 font-bold text-gray-600 uppercase text-xs text-right w-32">Charges</th>
+              <th className="py-2.5 font-bold text-gray-600 uppercase text-xs text-right w-32">Payments</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, i) => (
+              <tr key={i} className="border-b border-gray-200">
+                <td className="py-2.5 text-xs text-gray-600">{format(new Date(item.date), 'dd/MM/yy')}</td>
+                <td className="py-2.5 text-sm">{item.description}</td>
+                <td className="py-2.5 text-right font-medium">
+                  {item.type !== 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                </td>
+                <td className="py-2.5 text-right font-medium">
+                  {item.type === 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {/* Totals */}
+        <div className="flex justify-end pt-4">
+          <div className="w-72 space-y-2">
+            <div className="flex justify-between border-b border-gray-200 pb-2">
+              <span className="font-bold text-gray-600">Total Charges:</span>
+              <span className="font-bold">Rs. {parseFloat(ledger.total_charges).toLocaleString('en-IN', {minimumFractionDigits:2})}</span>
+            </div>
+            <div className="flex justify-between border-b border-gray-200 pb-2">
+              <span className="font-bold text-gray-600">Total Paid:</span>
+              <span className="font-bold">Rs. {parseFloat(ledger.total_paid).toLocaleString('en-IN', {minimumFractionDigits:2})}</span>
+            </div>
+            <div className="flex justify-between pt-2">
+              <span className="font-black text-lg">Balance Due:</span>
+              <span className="font-black text-lg">Rs. {parseFloat(ledger.balance_due).toLocaleString('en-IN', {minimumFractionDigits:2})}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="mt-20 pt-8 border-t border-gray-300 text-center text-xs text-gray-500">
+          <p>This is a computer generated document. For queries regarding this bill, please contact the reception.</p>
+          <p className="mt-1">Generated by Curevice IPD Billing System</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 export default function ReceptionistPortal() {
   const [section, setSection] = useState('opd')
@@ -4128,6 +4884,7 @@ export default function ReceptionistPortal() {
             {section === 'new_admission' && <IPDSection mode="new_admission" />}
             {section === 'emergency' && <EmergencySection />}
             {section === 'patients' && <PatientListSection />}
+            {section === 'opd_history' && <OpdSlipsSection />}
             {section === 'register' && <RegisterPatientSection />}
             {section === 'payment_slip' && <PaymentSlipSection />}
             {section === 'discharge' && <DischargeSection />}
