@@ -2,6 +2,10 @@
 Browser-facing pages (API console, etc.).
 """
 
+from pathlib import Path
+
+from django.conf import settings
+from django.http import Http404, HttpResponse
 from django.views.generic import TemplateView
 
 from apps.shared.hospital_themes import get_hospital_theme
@@ -52,3 +56,11 @@ class FieldPermissionMatrixPageView(TemplateView):
         ctx = super().get_context_data(**kwargs)
         ctx["api_base"] = "/api/v1"
         return ctx
+
+
+def frontend_index(request):
+    """Serve built SPA index from frontend/dist for Django homepage."""
+    index_path = Path(settings.BASE_DIR) / "frontend" / "dist" / "index.html"
+    if not index_path.exists():
+        raise Http404("Frontend build not found. Run frontend build first.")
+    return HttpResponse(index_path.read_text(encoding="utf-8"), content_type="text/html; charset=utf-8")

@@ -15,16 +15,29 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.static import serve as static_serve
 
 from drf_spectacular.views import SpectacularAPIView
 
 from apps.attendance.leave_action_view import LeaveActionView
-from config.views import ApiConsoleView, FieldPermissionMatrixPageView
+from config.views import ApiConsoleView, FieldPermissionMatrixPageView, frontend_index
 
 urlpatterns = [
+    # Frontend (Vite build output)
+    path("", frontend_index, name="frontend-home"),
+    re_path(
+        r"^assets/(?P<path>.*)$",
+        static_serve,
+        {"document_root": settings.BASE_DIR / "frontend" / "dist" / "assets"},
+    ),
+    re_path(
+        r"^(?P<path>(favicon\.svg|icons\.svg|hero-3d\.png))$",
+        static_serve,
+        {"document_root": settings.BASE_DIR / "frontend" / "dist"},
+    ),
     path("admin/", admin.site.urls),
     # One-click leave approve/deny from email — no login required
     path("leave/action/<str:token>/", LeaveActionView.as_view(), name="leave-action"),
@@ -58,4 +71,10 @@ urlpatterns = [
     path("api/v1/", include("apps.discharge.api_urls")),
     # OPD Templates (replaces Node.js server.js — /api/templates, /api/print, etc.)
     path("", include("apps.opd_templates.urls")),
+    # SPA fallback: direct browser refresh/open for frontend routes should load index.html
+    re_path(
+        r"^(?!api/|admin/|media/|static/|leave/|ui/|template/).*$",
+        frontend_index,
+        name="frontend-spa-fallback",
+    ),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

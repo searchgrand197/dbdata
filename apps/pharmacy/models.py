@@ -6,6 +6,132 @@ from apps.patients.models import Patient
 from apps.doctors.models import DoctorProfile
 from apps.inventory.models import Medicine, MedicineBatch
 
+
+class PharmacySupplier(TimeStampedModel, UUIDPrimaryKeyModel):
+    """Purchase party / distributor (Marg-style supplier master)."""
+
+    hospital = models.ForeignKey(Hospital, on_delete=models.CASCADE, related_name="pharmacy_suppliers")
+    name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=40, blank=True, default="")
+    gst_number = models.CharField(max_length=40, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["hospital", "name"]),
+            models.Index(fields=["hospital", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class PharmacyPurchaseChallan(TimeStampedModel, UUIDPrimaryKeyModel):
+    """Persisted purchase challan (Marg-style history); one row per POST to purchase-challan."""
+
+    hospital = models.ForeignKey(Hospital, on_delete=models.CASCADE, related_name="pharmacy_purchase_challans")
+    supplier = models.ForeignKey(
+        PharmacySupplier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_challans",
+    )
+    supplier_name_snapshot = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Supplier name at posting time if supplier row is later removed.",
+    )
+    challan_no = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    purchase_date = models.DateField(db_index=True)
+    payment_type = models.CharField(max_length=20, blank=True, default="cash")
+    gst_enabled = models.BooleanField(default=True)
+
+    total_items = models.PositiveIntegerField(default=0)
+    total_strips = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    total_extra_tablets = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        default=Decimal("0"),
+        help_text="Base-only quantity lines (tablets not counted as strips).",
+    )
+    total_base_qty = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    total_taxable = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="pharmacy_purchase_challans_created",
+    )
+
+    class Meta:
+        ordering = ("-purchase_date", "-created_at")
+        indexes = [
+            models.Index(fields=["hospital", "purchase_date"], name="pharm_pc_hosp_date_idx"),
+            models.Index(fields=["hospital", "supplier"], name="pharm_pc_hosp_sup_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"PC {self.challan_no or self.id} ({self.purchase_date})"
+
+
+class PharmacyPurchaseChallanLine(TimeStampedModel, UUIDPrimaryKeyModel):
+    challan = models.ForeignKey(
+        PharmacyPurchaseChallan,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    medicine = models.ForeignKey(Medicine, on_delete=models.PROTECT, related_name="purchase_challan_lines")
+    batch = models.ForeignKey(MedicineBatch, on_delete=models.PROTECT, related_name="purchase_challan_lines")
+
+    quantity_basis = models.CharField(max_length=10, default="pack")  # pack | base
+    pack_type = models.CharField(max_length=40, blank=True, default="")
+    conversion = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("1"))
+    pack_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    base_qty = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    rate_type = models.CharField(max_length=10, default="STRIP")
+
+    purchase_rate = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    mrp = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    sale_rate = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+
+    gst_type = models.CharField(max_length=20, blank=True, default="exclusive")
+    gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
+    no_gst = models.BooleanField(default=False)
+
+    taxable_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    gst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    final_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+
+    class Meta:
+        ordering = ("created_at", "id")
+        indexes = [models.Index(fields=["challan", "medicine"], name="pharm_pcline_ch_med_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.medicine_id} / {self.batch_id}"
+
+
+class PharmacyOutletSettings(TimeStampedModel, UUIDPrimaryKeyModel):
+    """Editable pharmacy letterhead / GST details for invoices (one row per hospital)."""
+
+    hospital = models.OneToOneField(Hospital, on_delete=models.CASCADE, related_name="pharmacy_outlet_settings")
+    business_name = models.CharField(max_length=200, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    mobile = models.CharField(max_length=40, blank=True, default="")
+    gst_number = models.CharField(max_length=40, blank=True, default="")
+    dl_number = models.CharField(max_length=40, blank=True, default="")
+    email = models.CharField(max_length=120, blank=True, default="")
+    website = models.CharField(max_length=200, blank=True, default="")
+    default_gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
+
+    def __str__(self) -> str:
+        return f"Pharmacy settings ({self.hospital_id})"
+
+
 class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -20,6 +146,8 @@ class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
     date = models.DateField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     
+    gst_enabled = models.BooleanField(default=True)
+
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     total_discount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     cgst = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
