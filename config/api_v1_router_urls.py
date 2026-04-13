@@ -55,7 +55,15 @@ from apps.treatment.views import (
 )
 from apps.beds.views import FloorViewSet, BedRoomViewSet, BedViewSet
 from apps.lab.views import LabTestCategoryViewSet, LabTestViewSet, LabReportViewSet, LabTestResultViewSet
-from apps.pharmacy.views import PharmacyInvoiceViewSet, PharmacyInvoiceItemViewSet
+from apps.pharmacy.views import (
+    PharmacyInvoiceViewSet,
+    PharmacyInvoiceItemViewSet,
+    PharmacyOutletSettingsView,
+    PharmacyPurchaseChallanView,
+    PharmacySupplierViewSet,
+    PurchaseHistoryDetailView,
+    PurchaseHistoryListView,
+)
 
 router = PublicApiRootRouter()
 router.register(r"appointments", AppointmentViewSet, basename="appointments")
@@ -124,9 +132,20 @@ router.register(r"lab/reports", LabReportViewSet, basename="lab-reports")
 router.register(r"lab/results", LabTestResultViewSet, basename="lab-results")
 router.register(r"pharmacy/invoices", PharmacyInvoiceViewSet, basename="pharmacy-invoices")
 router.register(r"pharmacy/items", PharmacyInvoiceItemViewSet, basename="pharmacy-items")
+router.register(r"pharmacy/suppliers", PharmacySupplierViewSet, basename="pharmacy-suppliers")
 
 urlpatterns = [
     path("doctor-analytics/", DoctorFinancialAnalyticsView.as_view(), name="doctor-analytics"),
     path("follow-up-alerts/", follow_up_alerts, name="follow-up-alerts"),
+    path("pharmacy/settings/", PharmacyOutletSettingsView.as_view(), name="pharmacy-outlet-settings"),
+    path("pharmacy/purchase-challan/", PharmacyPurchaseChallanView.as_view(), name="pharmacy-purchase-challan"),
+    path("pharmacy/purchase-history/", PurchaseHistoryListView.as_view(), name="pharmacy-purchase-history"),
+    path(
+        "pharmacy/purchase-history/<uuid:pk>/",
+        PurchaseHistoryDetailView.as_view(),
+        name="pharmacy-purchase-history-detail",
+    ),
+    path("purchase/history/", PurchaseHistoryListView.as_view(), name="purchase-history"),
+    path("purchase/history/<uuid:pk>/", PurchaseHistoryDetailView.as_view(), name="purchase-history-detail"),
     path("", include(router.urls)),
 ]

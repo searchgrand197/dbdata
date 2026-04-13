@@ -27,7 +27,13 @@ def get_batch_available_qty(batch: MedicineBatch) -> Decimal:
     return total or Decimal("0")
 
 
-def deduct_stock_fifo(*, request, hospital: Hospital, medicine_batch_pairs: Sequence[Tuple[MedicineBatch, Decimal]]) -> None:
+def deduct_stock_fifo(
+    *,
+    request,
+    hospital: Hospital,
+    medicine_batch_pairs: Sequence[Tuple[MedicineBatch, Decimal]],
+    reference_id: str = "",
+) -> None:
     """
     Deducts stock by writing ledger entries.
 
@@ -55,7 +61,7 @@ def deduct_stock_fifo(*, request, hospital: Hospital, medicine_batch_pairs: Sequ
             qty_change=(-qty),
             reason=StockLedger.Reason.DISPENSE_OUT,
             reference_type="pharmacy_dispense",
-            reference_id="",
+            reference_id=reference_id or "",
             created_by=created_by,
         )
 
@@ -98,7 +104,7 @@ def deduct_stock_for_medicine_fifo(*, request, hospital: Hospital, medicine_id, 
         if remaining > 0:
             raise ValueError(f"Insufficient stock. Remaining qty={remaining}")
 
-        deduct_stock_fifo(request=request, hospital=hospital, medicine_batch_pairs=deductions)
+        deduct_stock_fifo(request=request, hospital=hospital, medicine_batch_pairs=deductions, reference_id="")
 
     return [BatchDeduction(batch_id=str(b.id), qty=q) for b, q in deductions]
 

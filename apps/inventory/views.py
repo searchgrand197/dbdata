@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from rest_framework import permissions, status, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -12,6 +14,7 @@ from apps.auditlogs.services import create_audit_log
 from apps.inventory.models import Medicine, MedicineBatch, StockLedger, Unit
 from apps.inventory.serializers import (
     MedicineBatchCreateUpdateSerializer,
+    MedicineBatchRatesUpdateSerializer,
     MedicineBatchSerializer,
     MedicineCreateUpdateSerializer,
     MedicineSerializer,
@@ -20,15 +23,31 @@ from apps.inventory.serializers import (
     UnitCreateUpdateSerializer,
     UnitSerializer,
 )
+from apps.inventory.services.stock_service import get_batch_available_qty
 from apps.roles_permissions.permissions import HasRequiredPermission
 from apps.shared.response import success_response
 from apps.shared.models import Hospital
+
+
+def _tablets_per_strip_from_pack_info(pack_info: str) -> int | None:
+    """e.g. '1x10' or '1 x 10' → 10 tablets per strip (uses the number after x)."""
+    if not pack_info or not str(pack_info).strip():
+        return None
+    m = re.match(r"^\s*(\d+)\s*[x×]\s*(\d+)\s*$", str(pack_info).strip(), re.I)
+    if not m:
+        return None
+    return int(m.group(2))
 
 
 class HospitalScopedMixin:
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
+        # If the user has a hospital (including superusers), scope to that tenant so lists match
+        # pharmacy purchase, billing, and stock rules.
+        hid = getattr(user, "hospital_id", None)
+        if hid:
+            return qs.filter(hospital_id=hid)
         if user.is_superuser:
             return qs
         return qs.filter(hospital_id=user.hospital_id)
@@ -103,7 +122,25 @@ class MedicineViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
         return super().get_permissions()
 
     def perform_create(self, serializer):
-        medicine = serializer.save(hospital_id=self.request.user.hospital_id)
+        hospital_id = self.request.user.hospital_id
+        unit = serializer.validated_data.get("unit")
+        if unit is None:
+            unit, _ = Unit.objects.get_or_create(
+                hospital_id=hospital_id,
+                code="TAB",
+                defaults={"name": "Tablet", "is_active": True},
+            )
+            medicine = serializer.save(hospital_id=hospital_id, unit=unit)
+        else:
+            medicine = serializer.save(hospital_id=hospital_id)
+
+        per_strip = _tablets_per_strip_from_pack_info(medicine.pack_info or "")
+        conv = medicine.unit_conversions or {}
+        if per_strip and per_strip > 0 and not conv.get("strip"):
+            conv = {**conv, "strip": float(per_strip)}
+            medicine.unit_conversions = conv
+            medicine.save(update_fields=["unit_conversions", "updated_at"])
+
         create_audit_log(
             request=self.request,
             hospital=medicine.hospital,
@@ -133,6 +170,8 @@ class MedicineBatchViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action in {"list", "retrieve"}:
             return MedicineBatchSerializer
+        if self.action in {"update", "partial_update"}:
+            return MedicineBatchRatesUpdateSerializer
         return MedicineBatchCreateUpdateSerializer
 
     def get_required_permission(self):
@@ -153,10 +192,20 @@ class MedicineBatchViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
             after={"batch_no": batch.batch_no, "expiry_date": str(batch.expiry_date)},
         )
 
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        refreshed = self.get_queryset().get(pk=instance.pk)
+        return Response(MedicineBatchSerializer(refreshed, context={"request": request}).data)
+
 
 class StockLedgerViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
-    queryset = StockLedger.objects.all().select_related("medicine", "batch", "hospital")
+    queryset = StockLedger.objects.all().select_related("medicine", "batch", "hospital").order_by("-created_at")
     filter_backends = (DjangoFilterBackend, SearchFilter)
+    filterset_fields = ("batch", "medicine")
     search_fields = ("medicine__name", "batch__batch_no", "reference_type", "reference_id")
 
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
@@ -190,21 +239,47 @@ class StockLedgerViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
         if not self.request.user.is_superuser and hospital.id != self.request.user.hospital_id:
             raise permissions.PermissionDenied("Not in your hospital.")
 
+        med_id = data["medicine"]
+        if str(med_id) != str(medicine_batch.medicine_id):
+            raise ValidationError({"medicine": ["Medicine must match the selected batch."]})
+
         qty_change = Decimal(data["qty_change"])
         reason = data["reason"]
         if reason in {StockLedger.Reason.STOCK_IN, StockLedger.Reason.RETURN_IN} and qty_change <= 0:
-            return Response({"success": False, "errors": {"qty_change": ["qty_change must be > 0 for stock_in/return_in."]}}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({"qty_change": ["Must be greater than zero for stock in / return."]})
         if reason == StockLedger.Reason.DISPENSE_OUT and qty_change >= 0:
-            return Response({"success": False, "errors": {"qty_change": ["qty_change must be < 0 for dispense_out."]}}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({"qty_change": ["Must be negative for dispense out."]})
+
+        ref_type = (data.get("reference_type") or "").strip()
+        ref_id = (data.get("reference_id") or "").strip()
+        allow_negative = bool(data.get("allow_negative_stock", False))
+
+        if reason == StockLedger.Reason.ADJUST:
+            if qty_change == 0:
+                raise ValidationError({"qty_change": ["Adjustment quantity cannot be zero."]})
+            if not ref_id:
+                raise ValidationError({"reference_id": ["Reason is required for stock adjustments."]})
+            available = get_batch_available_qty(medicine_batch)
+            projected = available + qty_change
+            if projected < 0 and not allow_negative:
+                raise ValidationError(
+                    {
+                        "qty_change": [
+                            f"Resulting stock would be negative ({projected}). Enable allow_negative_stock or reduce the adjustment."
+                        ]
+                    }
+                )
+            if not ref_type:
+                ref_type = "inventory_adjust"
 
         entry = StockLedger.objects.create(
             hospital_id=hospital.id,
-            medicine_id=data["medicine"],
+            medicine_id=med_id,
             batch=medicine_batch,
             qty_change=qty_change,
             reason=reason,
-            reference_type=data.get("reference_type", ""),
-            reference_id=data.get("reference_id", ""),
+            reference_type=ref_type[:50],
+            reference_id=ref_id[:100],
             created_by=self.request.user,
         )
 
@@ -217,11 +292,16 @@ class StockLedgerViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
             after={"qty_change": str(entry.qty_change), "reason": entry.reason},
         )
 
-        return entry
+        serializer.instance = entry
 
     def create(self, request, *args, **kwargs):
-        # Use DRF default validation but return consistent payload.
-        return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            StockLedgerSerializer(serializer.instance, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 from django.shortcuts import render
 

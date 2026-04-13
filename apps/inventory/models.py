@@ -30,6 +30,9 @@ class Medicine(TimeStampedModel, UUIDPrimaryKeyModel):
     unit = models.ForeignKey(Unit, on_delete=models.PROTECT, related_name="medicines")
     hsn_code = models.CharField(max_length=20, blank=True, default="")
     pack_info = models.CharField(max_length=50, blank=True, default="") # e.g. 10x15
+    # Maps pack label (strip, box, carton) to number of base units (e.g. tablets) in that pack.
+    unit_conversions = models.JSONField(default=dict, blank=True)
+    gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
     is_active = models.BooleanField(default=True)
 
     class Meta:

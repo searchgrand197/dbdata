@@ -25,18 +25,50 @@ class MedicineSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Medicine
-        fields = ["id", "hospital_id", "sku", "name", "form", "strength", "unit", "unit_name", "hsn_code", "pack_info", "is_active", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "hospital_id",
+            "sku",
+            "name",
+            "form",
+            "strength",
+            "unit",
+            "unit_name",
+            "hsn_code",
+            "pack_info",
+            "unit_conversions",
+            "gst_percent",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class MedicineCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Medicine
-        fields = ["sku", "name", "form", "strength", "unit", "hsn_code", "pack_info", "is_active"]
+        fields = [
+            "sku",
+            "name",
+            "form",
+            "strength",
+            "unit",
+            "hsn_code",
+            "pack_info",
+            "unit_conversions",
+            "gst_percent",
+            "is_active",
+        ]
+        extra_kwargs = {
+            # Server assigns default TAB unit per hospital when omitted (pharmacy quick-create).
+            "unit": {"required": False, "allow_null": True},
+        }
 
 
 class MedicineBatchSerializer(serializers.ModelSerializer):
     hospital_id = serializers.UUIDField(read_only=True)
     medicine_name = serializers.CharField(source="medicine.name", read_only=True)
+    quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = MedicineBatch
@@ -51,15 +83,30 @@ class MedicineBatchSerializer(serializers.ModelSerializer):
             "unit_cost",
             "mrp",
             "sale_rate",
+            "quantity",
             "created_at",
             "updated_at",
         ]
+
+    def get_quantity(self, obj: MedicineBatch) -> float:
+        from apps.inventory.services.stock_service import get_batch_available_qty
+
+        return float(get_batch_available_qty(obj))
 
 
 class MedicineBatchCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = MedicineBatch
         fields = ["medicine", "batch_no", "expiry_date", "mfg_date", "unit_cost", "mrp", "sale_rate"]
+
+
+class MedicineBatchRatesUpdateSerializer(serializers.ModelSerializer):
+    """ERP: only sale pricing may be edited from the desk; cost/expiry/batch stay system-controlled."""
+
+    class Meta:
+        model = MedicineBatch
+        fields = ["mrp", "sale_rate"]
+
 
 
 class StockLedgerSerializer(serializers.ModelSerializer):
@@ -92,4 +139,5 @@ class StockLedgerCreateSerializer(serializers.Serializer):
     qty_change = serializers.DecimalField(max_digits=12, decimal_places=3)
     reference_type = serializers.CharField(required=False, allow_blank=True, default="")
     reference_id = serializers.CharField(required=False, allow_blank=True, default="")
+    allow_negative_stock = serializers.BooleanField(required=False, default=False)
 
