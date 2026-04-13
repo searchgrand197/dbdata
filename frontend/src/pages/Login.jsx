@@ -22,6 +22,16 @@ export default function Login() {
   async function handleLogin(e) {
     e.preventDefault()
     setLoading(true)
+
+    // Attempt to automatically enter fullscreen upon user interaction (login submit)
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen().catch(() => {})
+      }
+    } catch (e) {
+      // Ignore fullscreen errors silently
+    }
+
     try {
       // Backend login endpoint: POST /api/v1/auth/login/
       const { data } = await api.post('/auth/login/', { email, password })

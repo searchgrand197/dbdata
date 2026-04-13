@@ -245,10 +245,10 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         """Calculate running IPD ledger including dynamic room rent."""
         admission = self.get_object()
         
-        # 1. Invoices (Charges)
+        # 1. Invoices (Charges - Excluding Advances)
         invoices = BillingInvoice.objects.filter(
             ipd_admission=admission, status=BillingInvoice.Status.FINALIZED
-        ).prefetch_related("items").order_by("-created_at")
+        ).exclude(invoice_no__startswith="IPDADV-").prefetch_related("items").order_by("-created_at")
         
         record_charges = []
         invoices_total = Decimal("0.00")
@@ -464,4 +464,58 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             "description": description,
             "amount": amount,
             "payment": payment_data
+        })
+
+    @action(detail=True, methods=["patch"], url_path="update-charge")
+    @transaction.atomic
+    def update_charge(self, request, pk=None):
+        """Update the amount of an existing service charge."""
+        admission = self.get_object()
+        invoice_id = request.data.get("invoice_id")
+        amount_str = request.data.get("amount")
+
+        if not invoice_id or not amount_str:
+            return Response({"error": "Invoice ID and amount are required"}, status=400)
+
+        try:
+            amount = Decimal(str(amount_str))
+        except:
+            return Response({"error": "Invalid amount format"}, status=400)
+
+        # 1. Find the invoice — must belong to this admission
+        if invoice_id == "room_rent":
+            return Response({"error": "Room Rent is system-calculated and cannot be edited directly"}, status=400)
+
+        try:
+            invoice = BillingInvoice.objects.filter(
+                id=invoice_id, ipd_admission=admission
+            ).first()
+        except (ValueError, TypeError):
+            return Response({"error": "Invalid Invoice ID format"}, status=400)
+
+        if not invoice:
+            return Response({"error": "Invoice not found or does not belong to this admission"}, status=404)
+
+        if invoice.status == BillingInvoice.Status.CANCELLED:
+            return Response({"error": "Cannot edit a cancelled invoice"}, status=400)
+
+        # 2. Update line items
+        # Typically these service charges have only one item
+        item = invoice.items.first()
+        if item:
+            item.unit_price = amount
+            item.line_total = amount
+            item.save(update_fields=["unit_price", "line_total"])
+
+        # 3. Update invoice totals directly
+        # We bypass recalc_totals() here because that method incorrectly zeroes out 
+        # negative totals, but our IPD system uses negative amounts for discounts.
+        invoice.subtotal_amount = amount
+        invoice.total_amount = amount
+        invoice.save(update_fields=["subtotal_amount", "total_amount"])
+
+        return Response({
+            "success": True,
+            "invoice_no": invoice.invoice_no,
+            "new_total": str(invoice.total_amount)
         })

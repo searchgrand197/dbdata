@@ -174,12 +174,17 @@ function LeaveTab() {
       fetchLeaves()
       setForm(f => ({ ...f, reason: '' }))
     } catch (e) {
-      const msg =
-        e.response?.data?.detail ||
-        e.response?.data?.errors ||
-        e.response?.data?.non_field_errors ||
-        'Error submitting leave'
-      toast.error(typeof msg === 'string' ? msg : 'Error submitting leave')
+      let msg = 'Error submitting leave'
+      if (e.response?.data) {
+        const data = e.response.data
+        // Look for the most specific error message
+        const rawErr = data.detail || data.errors || data.non_field_errors || Object.values(data)[0]
+        const err = (typeof rawErr === 'object' && rawErr !== null) ? (rawErr.detail || rawErr.errors || Object.values(rawErr)[0]) : rawErr
+        
+        if (Array.isArray(err)) msg = err[0]
+        else if (typeof err === 'string') msg = err
+      }
+      toast.error(msg)
     }
     finally { setLoading(false) }
   }
@@ -440,7 +445,6 @@ export default function StaffPortal() {
 
   return (
     <Layout title="Staff Portal" subtitle={user.email || 'Staff'} color="blue" tabs={TABS} activeTab={tab} onTab={setTab}>
-      {tab === 'tasks' && <TasksTab />}
       {tab === 'tasks' && <TasksTab />}
       {tab === 'leaves' && <LeaveTab />}
       {tab === 'tp' && <TreatmentPlanTab />}
