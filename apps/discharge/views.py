@@ -33,10 +33,10 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
         from apps.beds.models import Bed
         from apps.billing.models import BillingInvoice, InvoiceItem, InvoiceNumberSequence
         
-        # Calculate stay exactly as in billing_summary
+        # Calculate stay exactly as in billing_summary - nights based calculation
         end_date = timezone.now().date()
         delta = end_date - admission.admission_date
-        stay_days = max(1, delta.days + 1)
+        stay_days = max(1, delta.days)
         
         if admission.bed_code:
             bed = Bed.objects.filter(bed_code=admission.bed_code, hospital_id=hospital_id).select_related("room").first()
@@ -97,20 +97,29 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
             return Response({"error": "Admission not found"}, status=404)
 
         # 1. Total Services (Surgery, Pharmacy, etc.)
-        total_services = BillingInvoice.objects.filter(
-            ipd_admission=admission,
-            status=BillingInvoice.Status.FINALIZED
-        ).aggregate(total=Sum("total_amount"))["total"] or Decimal("0.00")
+        # IMPORTANT: We calculate this from InvoiceItems to precisely exclude existing room rent items
+        # and we must exclude Advance Invoices which are NOT charges.
+        from apps.billing.models import InvoiceItem
+        total_services = InvoiceItem.objects.filter(
+            invoice__ipd_admission=admission,
+            invoice__status=BillingInvoice.Status.FINALIZED
+        ).exclude(
+            invoice__invoice_no__startswith="IPDADV-" # Exclude Advances
+        ).exclude(
+            invoice__invoice_no__startswith="IPDROOM-" # Exclude finalized Room bills
+        ).exclude(
+            description__icontains="Room Rent" # Double-check exclusion by description
+        ).aggregate(total=Sum("line_total"))["total"] or Decimal("0.00")
 
         # 2. Dynamic Room Charges
         room_total = Decimal("0.00")
         stay_days = 0
         daily_rate = Decimal("0.00")
         
-        # Determine stay duration (minimum 1 day)
+        # Determine stay duration (minimum 1 day) - Nights calculation matches ledger
         end_date = admission.discharged_at.date() if admission.discharged_at else timezone.now().date()
         delta = end_date - admission.admission_date
-        stay_days = max(1, delta.days + 1)
+        stay_days = max(1, delta.days)
 
         # Get room rate
         if admission.bed_code:
@@ -119,7 +128,7 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
                 daily_rate = bed.room.daily_charge
                 room_total = stay_days * daily_rate
 
-        # 3. Total Paid: Sum of all successful payment transactions (advances)
+        # 3. Total Paid: Sum of all successful payment transactions (advances and payments)
         total_paid = PaymentTransaction.objects.filter(
             invoice__ipd_admission=admission,
             status=PaymentTransaction.Status.SUCCESS

@@ -138,11 +138,26 @@ class LeaveApplicationSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data["total_days"] = compute_leave_total_days(
+        total = compute_leave_total_days(
             validated_data["start_date"],
             validated_data["end_date"],
             is_half_day=validated_data.get("is_half_day", False),
         )
+        validated_data["total_days"] = total
+        
+        l_type = validated_data.get("leave_type")
+        staff = validated_data.get("staff")
+        
+        # Only enforce balance check for Earned Leave
+        if staff and l_type == LeaveApplication.LeaveType.EARNED:
+            bal, _ = StaffLeaveBalance.objects.get_or_create(staff=staff, leave_type=l_type)
+            if bal.balance_days < total:
+                if bal.balance_days <= 0:
+                    msg = f"No {l_type} leave is left. You cannot apply for {l_type} leave at this time."
+                else:
+                    msg = f"Insufficient {l_type} leave balance. You are requesting {total} day(s), but only have {bal.balance_days} day(s) available."
+                raise serializers.ValidationError({"detail": msg})
+                
         return super().create(validated_data)
 
 
