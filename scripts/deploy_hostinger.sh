@@ -135,6 +135,13 @@ server {
         alias ${APP_DIR}/staticfiles/;
     }
 
+    # Serve Vite-built frontend assets directly via Nginx (cache-friendly hashed filenames)
+    location /assets/ {
+        alias ${APP_DIR}/frontend/dist/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
     location / {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
