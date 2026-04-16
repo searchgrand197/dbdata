@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import Layout from '../components/Layout'
 import api from '../api'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import {
   Clock, CheckCircle, XCircle, Calendar, Pill,
-  ClipboardList, Plus, User, Activity, FileText
+  ClipboardList, Plus, User, Activity, FileText,
+  ChevronDown, ChevronUp, SkipForward, BedDouble
 } from 'lucide-react'
 
 const TABS = [
@@ -15,112 +16,339 @@ const TABS = [
 ]
 
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const CAT_ICON = { medication:'💊', nursing:'🩺', physiotherapy:'🏃', investigation:'🔬', diet:'🥗', other:'📋' }
+const STATUS_CLS = {
+  pending:     'bg-amber-100 text-amber-700 border-amber-200',
+  in_progress: 'bg-blue-100 text-blue-700 border-blue-200',
+  done:        'bg-emerald-100 text-emerald-700 border-emerald-200',
+  skipped:     'bg-slate-100 text-slate-500 border-slate-200',
+}
+function taskSortKey(t) {
+  return `${t.date || '9999-99-99'}T${t.time_of_day || '23:59:59'}`
+}
+
+function taskDateTimeSortKey(task, fallbackTime = '00:00:00') {
+  return `${task?.date || '0000-00-00'}T${task?.time_of_day || fallbackTime}`
+}
+
+function getTaskPatientName(task) {
+  return (
+    task?.patient_name ||
+    task?.patient_full_name ||
+    [task?.patient?.first_name, task?.patient?.last_name].filter(Boolean).join(' ') ||
+    task?.patient?.name ||
+    task?.patient?.full_name ||
+    task?.visit_patient_name ||
+    task?.ipd_patient_name ||
+    'Unknown Patient'
+  )
+}
+
+// ─── Single expandable task card ─────────────────────────────────────────────
+function TaskCard({ task, onDone, onSkip }) {
+  const [open, setOpen] = useState(false)
+  const isPending = task.status === 'pending'
+  const isDone    = task.status === 'done'
+  const isSkipped = task.status === 'skipped'
+  const rowBg = isDone ? 'bg-emerald-50/40 border-emerald-200' : isSkipped ? 'bg-slate-50/40 border-slate-200' : 'bg-white border-gray-100'
+  const patientName = getTaskPatientName(task)
+
+  return (
+    <div className={`rounded-2xl border shadow-sm overflow-hidden transition-all ${rowBg}`}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full text-left px-4 py-3 flex items-center gap-3">
+        <span className="text-2xl shrink-0">{CAT_ICON[task.item_category] || '📋'}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
+              {task.date} {task.time_of_day ? task.time_of_day.slice(0,5) : ''}
+            </span>
+            <p className="font-semibold text-gray-800 text-sm truncate">{task.item_title}</p>
+            {task.priority === 'stat' && (
+              <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-bold border border-red-200">STAT</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <User size={11} className="text-gray-400 shrink-0" />
+            <span className="text-xs text-gray-500 truncate">{patientName} · Bed {task.bed_code || 'N/A'}</span>
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ml-auto shrink-0 ${STATUS_CLS[task.status] || ''}`}>
+              {task.status}
+            </span>
+          </div>
+        </div>
+        {isPending && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDone(task)
+            }}
+            className="shrink-0 text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            Mark Done
+          </button>
+        )}
+        {open ? <ChevronUp size={15} className="text-gray-400 shrink-0" /> : <ChevronDown size={15} className="text-gray-400 shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100 px-4 py-3 space-y-3 bg-white">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
+            <div><span className="font-semibold">Category:</span> {task.item_category}</div>
+            <div><span className="font-semibold">Priority:</span> {task.priority}</div>
+            <div><span className="font-semibold">Date:</span> {task.date}</div>
+            <div><span className="font-semibold">Time:</span> {task.time_of_day || 'Any'}</div>
+            <div><span className="font-semibold">Patient:</span> {patientName}</div>
+            <div><span className="font-semibold">Bed:</span> {task.bed_code || 'N/A'}</div>
+          </div>
+          {task.notes_from_doctor && (
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs text-blue-800">
+              <span className="font-bold">Doctor note: </span>{task.notes_from_doctor}
+            </div>
+          )}
+          {task.notes_from_staff && (
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 text-xs text-gray-700">
+              <span className="font-bold">Staff note: </span>{task.notes_from_staff}
+            </div>
+          )}
+          {isPending && (
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => { onDone(task); setOpen(false) }}
+                className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-600 text-white text-xs py-2 rounded-xl font-bold hover:bg-emerald-700">
+                <CheckCircle size={14} /> Mark Done
+              </button>
+              <button onClick={() => { onSkip(task); setOpen(false) }}
+                className="flex-1 flex items-center justify-center gap-1.5 bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-bold hover:bg-slate-200 border border-slate-200">
+                <SkipForward size={14} /> Skip
+              </button>
+            </div>
+          )}
+          {isDone && (
+            <div className="flex items-center gap-2 text-emerald-700 text-xs font-semibold">
+              <CheckCircle size={14} /> Completed
+              {task.completed_at && <span className="text-gray-400 font-normal ml-1">{new Date(task.completed_at).toLocaleString()}</span>}
+            </div>
+          )}
+          {isSkipped && (
+            <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold">
+              <SkipForward size={14} /> Skipped
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── My Tasks Tab ────────────────────────────────────────────────────────────
 function TasksTab() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
-  const today = format(new Date(), 'yyyy-MM-dd')
+  const [section, setSection] = useState('pending')
+  const [selectedCompletedPatient, setSelectedCompletedPatient] = useState('')
 
-  useEffect(() => { fetchTasks() }, [])
-
-  async function fetchTasks() {
+  const fetchTasks = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.get(`/treatment-tasks/?mine=true&date=${today}`)
-      setTasks(data.results || data)
+      const { data } = await api.get('/treatment-tasks/?mine=true&ordering=date,time_of_day&limit=1000')
+      setTasks(Array.isArray(data) ? data : (data.results || []))
     } catch { toast.error('Failed to load tasks') }
     finally { setLoading(false) }
-  }
+  }, [])
+
+  useEffect(() => { fetchTasks() }, [fetchTasks])
 
   async function markDone(task) {
     try {
       await api.post(`/treatment-tasks/${task.id}/complete/`, { notes: '' })
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'done', completed_at: new Date().toISOString() } : t))
       toast.success('Task marked done!')
-      fetchTasks()
     } catch (e) { toast.error(e.response?.data?.detail || 'Error') }
   }
 
   async function skipTask(task) {
     try {
       await api.post(`/treatment-tasks/${task.id}/skip/`)
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'skipped' } : t))
       toast.success('Task skipped')
-      fetchTasks()
     } catch (e) { toast.error(e.response?.data?.detail || 'Error') }
   }
 
-  const grouped = tasks.reduce((acc, t) => {
-    const key = t.time_of_day || 'Anytime'
-    if (!acc[key]) acc[key] = []
-    acc[key].push(t)
-    return acc
-  }, {})
+  const counts = useMemo(() => ({
+    all:     tasks.length,
+    pending: tasks.filter(t => t.status === 'pending').length,
+    done:    tasks.filter(t => t.status === 'done').length,
+    skipped: tasks.filter(t => t.status === 'skipped').length,
+  }), [tasks])
 
-  const statusColor = {
-    pending: 'bg-amber-100 text-amber-700',
-    in_progress: 'bg-blue-100 text-blue-700',
-    done: 'bg-green-100 text-green-700',
-    skipped: 'bg-gray-100 text-gray-500',
-  }
+  const visibleTasks = useMemo(() => {
+    const filtered = section === 'all' ? tasks : tasks.filter(t => t.status === section)
+    return [...filtered].sort((a, b) => taskSortKey(a).localeCompare(taskSortKey(b)))
+  }, [tasks, section])
 
-  const categoryIcon = {
-    medication: '💊',
-    nursing: '🩺',
-    physiotherapy: '🏃',
-    investigation: '🔬',
-    diet: '🥗',
-    other: '📋',
-  }
+  const completedPatients = useMemo(() => {
+    const doneTasks = tasks.filter((t) => t.status === 'done')
+    const bucket = new Map()
+    doneTasks.forEach((task) => {
+      const patientName = getTaskPatientName(task)
+      const patientKey = `${task.ipd_admission || 'na'}::${patientName}`
+      if (!bucket.has(patientKey)) {
+        bucket.set(patientKey, {
+          patientKey,
+          patientName,
+          ipdAdmission: task.ipd_admission || '',
+          bedCode: task.bed_code || 'N/A',
+          totalDone: 0,
+          latestDoneAt: '',
+        })
+      }
+      const rec = bucket.get(patientKey)
+      rec.totalDone += 1
+      rec.latestDoneAt = [rec.latestDoneAt, task.completed_at || taskDateTimeSortKey(task)].sort().pop()
+    })
+    return [...bucket.values()].sort((a, b) => String(b.latestDoneAt || '').localeCompare(String(a.latestDoneAt || '')))
+  }, [tasks])
+
+  useEffect(() => {
+    if (section !== 'done') return
+    if (!completedPatients.some((p) => p.patientKey === selectedCompletedPatient)) {
+      setSelectedCompletedPatient('')
+    }
+  }, [section, completedPatients, selectedCompletedPatient])
+
+  const selectedPatientMedicationHistory = useMemo(() => {
+    if (!selectedCompletedPatient) return []
+    return tasks
+      .filter((task) => task.status === 'done')
+      .filter((task) => {
+        const patientName = getTaskPatientName(task)
+        const key = `${task.ipd_admission || 'na'}::${patientName}`
+        return key === selectedCompletedPatient
+      })
+      .sort((a, b) => taskDateTimeSortKey(b).localeCompare(taskDateTimeSortKey(a)))
+  }, [tasks, selectedCompletedPatient])
+
+  const selectedCompletedPatientMeta = useMemo(
+    () => completedPatients.find((p) => p.patientKey === selectedCompletedPatient) || null,
+    [completedPatients, selectedCompletedPatient],
+  )
+
+  const SECTIONS = [
+    { id: 'pending', label: 'Pending',   activeCls: 'bg-amber-100 text-amber-700' },
+    { id: 'done',    label: 'Completed', activeCls: 'bg-emerald-100 text-emerald-700' },
+    { id: 'skipped', label: 'Skipped',   activeCls: 'bg-slate-100 text-slate-600' },
+    { id: 'all',     label: 'All',       activeCls: 'bg-blue-100 text-blue-700' },
+  ]
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
-      <div className="flex items-center justify-between">
-        <h2 className="font-bold text-gray-800">Today's Tasks</h2>
-        <span className="bg-blue-100 text-blue-700 text-xs font-semibold px-3 py-1 rounded-full">{tasks.length} total</span>
+      {/* Section tabs */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
+        {SECTIONS.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1
+              ${section === s.id ? `bg-white shadow ${s.activeCls}` : 'text-gray-500 hover:text-gray-700'}`}>
+            {s.label}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${section === s.id ? s.activeCls : 'bg-gray-200 text-gray-500'}`}>
+              {counts[s.id]}
+            </span>
+          </button>
+        ))}
       </div>
 
       {loading ? (
         <div className="text-center py-12 text-gray-400">Loading tasks...</div>
-      ) : Object.keys(grouped).length === 0 ? (
+      ) : section === 'done' ? (
+        completedPatients.length === 0 ? (
+          <div className="text-center py-12">
+            <CheckCircle className="mx-auto text-emerald-400 mb-2" size={40} />
+            <p className="text-gray-500 font-medium">No completed tasks yet</p>
+          </div>
+        ) : (
+          <div className="bg-white border border-gray-100 rounded-2xl p-3 space-y-2 max-h-[70vh] overflow-y-auto">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Patients</p>
+            {completedPatients.map((p) => {
+              const selected = p.patientKey === selectedCompletedPatient
+              return (
+                <button
+                  key={p.patientKey}
+                  type="button"
+                  onClick={() => setSelectedCompletedPatient(p.patientKey)}
+                  className={`w-full text-left rounded-xl border px-3 py-2 transition-all ${
+                    selected ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:bg-gray-50'
+                  }`}
+                >
+                  <p className="text-sm font-bold text-gray-800 truncate">{p.patientName}</p>
+                  <p className="text-xs text-gray-500">Bed {p.bedCode}</p>
+                  <p className="text-[11px] mt-1 text-emerald-700 font-semibold">{p.totalDone} completed</p>
+                </button>
+              )
+            })}
+          </div>
+        )
+      ) : visibleTasks.length === 0 ? (
         <div className="text-center py-12">
-          <CheckCircle className="mx-auto text-green-400 mb-2" size={40} />
-          <p className="text-gray-500">All caught up! No pending tasks.</p>
+          <CheckCircle className="mx-auto text-emerald-400 mb-2" size={40} />
+          <p className="text-gray-500 font-medium">
+            {section === 'pending' ? 'No pending tasks — great work!' : `No ${section} tasks`}
+          </p>
         </div>
       ) : (
-        Object.entries(grouped).sort().map(([time, items]) => (
-          <div key={time} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="bg-gray-50 px-4 py-2 border-b border-gray-100 flex items-center gap-2">
-              <Clock size={14} className="text-gray-400" />
-              <span className="text-sm font-semibold text-gray-600">{time}</span>
-              <span className="ml-auto text-xs text-gray-400">{items.length} items</span>
+        <div className="space-y-3">
+          {visibleTasks.map(task => (
+            <TaskCard key={task.id} task={task} onDone={markDone} onSkip={skipTask} />
+          ))}
+        </div>
+      )}
+
+      {section === 'done' && selectedCompletedPatient && (
+        <div className="fixed inset-0 z-[210] bg-black/40 backdrop-blur-[1px] p-4 flex items-center justify-center">
+          <div className="w-full max-w-2xl bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold text-gray-800">
+                  {selectedCompletedPatientMeta?.patientName || 'Patient'} - Medication History
+                </p>
+                <p className="text-xs text-gray-500">
+                  Bed {selectedCompletedPatientMeta?.bedCode || 'N/A'} · {selectedCompletedPatientMeta?.totalDone || 0} completed
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedCompletedPatient('')}
+                className="text-xs font-bold px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+              >
+                Close
+              </button>
             </div>
-            <div className="divide-y divide-gray-50">
-              {items.map(task => (
-                <div key={task.id} className="p-4 flex items-start gap-3">
-                  <span className="text-xl">{categoryIcon[task.item_category] || '📋'}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="font-semibold text-gray-800 text-sm">{task.item_title}</p>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor[task.status]}`}>
-                        {task.status}
-                      </span>
-                      {task.priority === 'stat' && (
-                        <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-bold">STAT</span>
+
+            <div className="p-4 max-h-[65vh] overflow-y-auto">
+              {selectedPatientMedicationHistory.length === 0 ? (
+                <p className="text-sm text-gray-500">No medication history found.</p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedPatientMedicationHistory.map((task) => (
+                    <div key={task.id} className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">{CAT_ICON[task.item_category] || '📋'}</span>
+                        <p className="text-sm font-semibold text-gray-800">{task.item_title}</p>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {task.date} {task.time_of_day ? task.time_of_day.slice(0, 5) : ''} · Bed {task.bed_code || 'N/A'}
+                      </p>
+                      {task.completed_at && (
+                        <p className="text-[11px] text-emerald-700 mt-1 font-medium">
+                          Completed: {new Date(task.completed_at).toLocaleString()}
+                        </p>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5 truncate">{task.patient_name} — {task.notes_from_doctor}</p>
-                  </div>
-                  {task.status === 'pending' && (
-                    <div className="flex gap-2 shrink-0">
-                      <button onClick={() => markDone(task)} className="bg-green-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-green-700 font-medium">Done</button>
-                      <button onClick={() => skipTask(task)} className="bg-gray-100 text-gray-600 text-xs px-3 py-1.5 rounded-lg hover:bg-gray-200 font-medium">Skip</button>
-                    </div>
-                  )}
-                  {task.status === 'done' && <CheckCircle className="text-green-500 shrink-0" size={20} />}
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           </div>
-        ))
+        </div>
       )}
     </div>
   )

@@ -245,21 +245,21 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
     }
   }
 
-  const th = 'px-0.5 py-0.5 font-semibold text-slate-600 whitespace-nowrap'
-  const td = 'px-0.5 py-0 align-top border-t border-slate-100'
-  const inp = 'w-full min-w-0 border border-slate-200 rounded px-0.5 py-0 text-[9px] leading-tight'
-  const num = 'text-right font-mono tabular-nums text-[9px]'
+  const th = 'px-1 py-1 font-semibold text-slate-700 whitespace-nowrap text-xs'
+  const td = 'px-1 py-0.5 align-top border-t border-slate-100'
+  const inp = 'w-full min-w-0 border border-slate-200 rounded px-1 py-0.5 text-[11px] leading-tight'
+  const num = 'text-right font-mono tabular-nums text-[11px]'
   const calcCell = `${num} bg-amber-50/90`
 
   return (
-    <div className="h-full flex flex-col gap-1 overflow-hidden p-2 text-slate-800">
+    <div className="h-full flex flex-col gap-2 overflow-hidden p-3 text-slate-800 text-[14px]">
       <div className="shrink-0 flex flex-wrap items-end gap-x-2 gap-y-1">
         <div className="flex flex-col min-w-[10rem] flex-1">
-          <span className="text-[9px] font-semibold text-slate-500 uppercase">Supplier *</span>
+          <span className="text-[10px] font-semibold text-slate-500 uppercase">Supplier *</span>
           <PurchaseSupplierPicker supplierId={supplierId} supplierName={supplierName} onChange={setSupplier} required />
         </div>
         <label className="flex flex-col w-[7.5rem]">
-          <span className="text-[9px] font-semibold text-slate-500 uppercase">Invoice *</span>
+          <span className="text-[10px] font-semibold text-slate-500 uppercase">Invoice *</span>
           <input
             value={invoiceNo}
             onChange={(e) => setInvoiceNo(e.target.value)}
@@ -268,19 +268,19 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
           />
         </label>
         <label className="flex flex-col w-[8.5rem]">
-          <span className="text-[9px] font-semibold text-slate-500 uppercase">Date *</span>
+          <span className="text-[10px] font-semibold text-slate-500 uppercase">Date *</span>
           <input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} className={inp} />
         </label>
         <label className="flex flex-col w-[6.5rem]">
-          <span className="text-[9px] font-semibold text-slate-500 uppercase">Pay *</span>
+          <span className="text-[10px] font-semibold text-slate-500 uppercase">Pay *</span>
           <select value={paymentType} onChange={(e) => setPaymentType(e.target.value)} className={inp}>
             <option value="cash">Cash</option>
             <option value="credit">Credit</option>
           </select>
         </label>
         <div className="flex flex-col">
-          <span className="text-[9px] font-semibold text-slate-500 uppercase">Tax</span>
-          <div className="flex rounded border border-slate-200 overflow-hidden text-[8px] font-bold">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase">Tax</span>
+          <div className="flex rounded border border-slate-200 overflow-hidden text-[10px] font-bold">
             <button
               type="button"
               onClick={() => setChallanGstEnabled(true)}
@@ -301,24 +301,24 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
 
       <div className="flex-1 min-h-0 min-w-0 border border-slate-200 rounded bg-white overflow-hidden flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          <table className="w-full border-collapse table-fixed text-[9px]">
+          <table className="w-full border-collapse table-fixed text-[11px]">
             <thead className="bg-slate-100 sticky top-0 z-10">
               <tr className="text-left">
-                <th className={`${th} w-[14%]`}>Medicine</th>
-                <th className={`${th} w-[7%]`}>Batch</th>
-                <th className={`${th} w-[8%]`}>Expiry</th>
-                <th className={`${th} w-[5%]`}>Qty</th>
-                <th className={`${th} w-[6%]`}>Pack</th>
-                <th className={`${th} w-[5%]`}>Conv</th>
-                <th className={`${th} w-[6%]`}>Tot.qty</th>
-                <th className={`${th} w-[7%]`}>Rate type</th>
+                <th className={`${th} w-[16%]`}>Medicine</th>
+                <th className={`${th} w-[6%]`}>Batch</th>
+                <th className={`${th} w-[7%]`}>Expiry</th>
+                <th className={`${th} w-[4%]`}>Qty</th>
+                <th className={`${th} w-[5%]`}>Pack</th>
+                <th className={`${th} w-[4%]`}>Conv</th>
+                <th className={`${th} w-[5%]`}>Tot.qty</th>
+                <th className={`${th} w-[6%]`}>Rate type</th>
                 <th className={`${th} w-[6%]`}>P.Rate</th>
                 <th className={`${th} w-[6%]`}>MRP</th>
                 <th className={`${th} w-[5%]`}>Disc</th>
-                {challanGstEnabled ? <th className={`${th} w-[9%]`}>GST</th> : null}
-                <th className={`${th} w-[7%]`}>Taxable</th>
-                {challanGstEnabled ? <th className={`${th} w-[7%]`}>GST ₹</th> : null}
-                <th className={`${th} w-[7%]`}>Final</th>
+                {challanGstEnabled ? <th className={`${th} w-[8%]`}>GST</th> : null}
+                <th className={`${th} w-[6%]`}>Taxable</th>
+                {challanGstEnabled ? <th className={`${th} w-[6%]`}>GST ₹</th> : null}
+                <th className={`${th} w-[6%]`}>Final</th>
                 <th className="w-5 p-0" />
               </tr>
             </thead>
@@ -446,7 +446,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                           disabled={ln.no_gst}
                           title="Blank = product / outlet default"
                         />
-                        <label className="flex items-center gap-0.5 mt-0.5 text-[8px] text-slate-600">
+                        <label className="flex items-center gap-0.5 mt-0.5 text-[10px] text-slate-600">
                           <input
                             type="checkbox"
                             checked={ln.no_gst}
@@ -462,7 +462,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                         {pv.gstAmount > 0 ? (
                           <>
                             <div>{pv.gstAmount.toFixed(2)}</div>
-                            <div className="text-[7px] text-slate-500 leading-tight">
+                            <div className="text-[9px] text-slate-500 leading-tight">
                               C {Number(pv.cgst || 0).toFixed(2)} · S {Number(pv.sgst || 0).toFixed(2)}
                             </div>
                           </>
@@ -492,7 +492,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
             </tbody>
             <tfoot>
               <tr className="bg-slate-50 font-semibold text-slate-700">
-                <td colSpan={challanGstEnabled ? 12 : 11} className={`${td} text-right text-[9px] pr-1`}>
+                <td colSpan={challanGstEnabled ? 12 : 11} className={`${td} text-right text-[11px] pr-1`}>
                   Totals
                 </td>
                 <td className={`${td} ${calcCell}`}>{colSum.taxable > 0 ? colSum.taxable.toFixed(2) : ''}</td>
@@ -509,11 +509,11 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
         </div>
       </div>
 
-      <div className="flex gap-1.5 shrink-0 items-center">
+      <div className="flex gap-2 shrink-0 items-center">
         <button
           type="button"
           onClick={addRow}
-          className="flex items-center gap-0.5 border border-slate-200 px-1.5 py-0.5 rounded text-[10px]"
+          className="flex items-center gap-0.5 border border-slate-200 px-2 py-1 rounded text-[11px]"
         >
           <Plus size={12} /> Row
         </button>
@@ -521,7 +521,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
           type="button"
           onClick={submit}
           disabled={submitting}
-          className="bg-emerald-600 text-white px-3 py-1 rounded text-[10px] font-semibold disabled:opacity-50"
+          className="bg-emerald-600 text-white px-3 py-1.5 rounded text-[11px] font-semibold disabled:opacity-50"
         >
           {submitting ? 'Posting…' : 'Post purchase'}
         </button>

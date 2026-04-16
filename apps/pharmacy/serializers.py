@@ -40,8 +40,17 @@ class PharmacyInvoiceItemSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
+        request = self.context.get("request")
+        allow_expired = False
+        if request is not None:
+            allow_expired = str(request.query_params.get("allow_expired", "")).lower() in ("1", "true", "yes")
         batch = attrs.get("batch") or getattr(self.instance, "batch", None)
-        if batch and batch.expiry_date and batch.expiry_date < timezone.now().date():
+        if (
+            batch
+            and batch.expiry_date
+            and batch.expiry_date < timezone.now().date()
+            and not allow_expired
+        ):
             raise serializers.ValidationError({"batch": ["This batch is expired and cannot be sold."]})
         inv = attrs.get("invoice")
         if inv is None and getattr(self.instance, "invoice_id", None):

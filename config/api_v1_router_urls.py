@@ -27,6 +27,7 @@ from apps.doctors.views import (
 from apps.followups.views import FollowUpViewSet
 from apps.inventory.views import (
     MedicineBatchViewSet,
+    MedicineCategoryViewSet,
     MedicineViewSet,
     StockLedgerViewSet,
     UnitViewSet,
@@ -48,7 +49,10 @@ from apps.staff.views import (
 )
 from apps.settings_management.views import LeaveApproverViewSet
 from apps.tokens.views import TokenViewSet
+from apps.notifications.views import NotificationViewSet
 from apps.treatment.views import (
+    PatientTimelineViewSet,
+    PatientPlanOverviewView,
     TreatmentPlanItemViewSet,
     TreatmentPlanViewSet,
     TreatmentTaskViewSet,
@@ -58,12 +62,14 @@ from apps.lab.views import LabTestCategoryViewSet, LabTestViewSet, LabReportView
 from apps.pharmacy.views import (
     PharmacyInvoiceViewSet,
     PharmacyInvoiceItemViewSet,
+    PharmacyNextInvoiceNumberView,
     PharmacyOutletSettingsView,
     PharmacyPurchaseChallanView,
     PharmacySupplierViewSet,
     PurchaseHistoryDetailView,
     PurchaseHistoryListView,
 )
+from apps.pharmacy.dashboard import PharmacyDashboardView
 
 router = PublicApiRootRouter()
 router.register(r"appointments", AppointmentViewSet, basename="appointments")
@@ -94,6 +100,7 @@ router.register(r"follow-ups", FollowUpViewSet, basename="follow-ups")
 router.register(r"invoices", BillingInvoiceViewSet, basename="invoices")
 router.register(r"ipd-admissions", IPDAdmissionViewSet, basename="ipd-admissions")
 router.register(r"medicines", MedicineViewSet, basename="medicines")
+router.register(r"medicine-categories", MedicineCategoryViewSet, basename="medicine-categories")
 router.register(r"opd-visits", OPDVisitViewSet, basename="opd-visits")
 router.register(r"patients", PatientViewSet, basename="patients")
 router.register(r"payments", PaymentTransactionViewSet, basename="payments")
@@ -122,6 +129,8 @@ router.register(r"weekly-schedules", DoctorWeeklyScheduleViewSet, basename="week
 router.register(r"treatment-plans", TreatmentPlanViewSet, basename="treatment-plans")
 router.register(r"treatment-plan-items", TreatmentPlanItemViewSet, basename="treatment-plan-items")
 router.register(r"treatment-tasks", TreatmentTaskViewSet, basename="treatment-tasks")
+router.register(r"patient-timeline", PatientTimelineViewSet, basename="patient-timeline")
+router.register(r"notifications", NotificationViewSet, basename="notifications")
 router.register(r"settings/leave-approvers", LeaveApproverViewSet, basename="settings-leave-approvers")
 router.register(r"beds/floors", FloorViewSet, basename="beds-floors")
 router.register(r"beds/rooms", BedRoomViewSet, basename="beds-rooms")
@@ -137,6 +146,8 @@ router.register(r"pharmacy/suppliers", PharmacySupplierViewSet, basename="pharma
 urlpatterns = [
     path("doctor-analytics/", DoctorFinancialAnalyticsView.as_view(), name="doctor-analytics"),
     path("follow-up-alerts/", follow_up_alerts, name="follow-up-alerts"),
+    path("pharmacy/dashboard/", PharmacyDashboardView.as_view(), name="pharmacy-dashboard"),
+    path("pharmacy/invoice/next-number/", PharmacyNextInvoiceNumberView.as_view(), name="pharmacy-next-invoice"),
     path("pharmacy/settings/", PharmacyOutletSettingsView.as_view(), name="pharmacy-outlet-settings"),
     path("pharmacy/purchase-challan/", PharmacyPurchaseChallanView.as_view(), name="pharmacy-purchase-challan"),
     path("pharmacy/purchase-history/", PurchaseHistoryListView.as_view(), name="pharmacy-purchase-history"),
@@ -147,5 +158,6 @@ urlpatterns = [
     ),
     path("purchase/history/", PurchaseHistoryListView.as_view(), name="purchase-history"),
     path("purchase/history/<uuid:pk>/", PurchaseHistoryDetailView.as_view(), name="purchase-history-detail"),
+    path("treatment/patient-overview/", PatientPlanOverviewView.as_view(), name="treatment-patient-overview"),
     path("", include(router.urls)),
 ]

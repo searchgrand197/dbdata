@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from apps.treatment.models import TreatmentPlan, TreatmentPlanItem, TreatmentTask
+from apps.treatment.models import PatientTimeline, TreatmentPlan, TreatmentPlanItem, TreatmentTask
 
 
 def _resolve_staff_for_item(item: TreatmentPlanItem, target_date: date):
@@ -55,6 +55,36 @@ def _resolve_staff_for_item(item: TreatmentPlanItem, target_date: date):
         return qs.first()
 
     return None
+
+
+def create_patient_timeline_event(
+    *,
+    patient,
+    hospital_id,
+    event_type: str,
+    title: str,
+    description: str = "",
+    timestamp=None,
+    ipd_admission=None,
+    treatment_plan=None,
+    treatment_item=None,
+    treatment_task=None,
+    created_by=None,
+):
+    """Create a single audit timeline event for treatment history."""
+    PatientTimeline.objects.create(
+        patient=patient,
+        hospital_id=hospital_id,
+        ipd_admission=ipd_admission,
+        event_type=event_type,
+        title=title,
+        description=description,
+        timestamp=timestamp or timezone.now(),
+        treatment_plan=treatment_plan,
+        treatment_item=treatment_item,
+        treatment_task=treatment_task,
+        created_by=created_by,
+    )
 
 
 @transaction.atomic
@@ -127,6 +157,19 @@ def complete_task(
     if notes:
         task.notes_from_staff = notes
     task.save(update_fields=["status", "completed_at", "completed_by", "notes_from_staff", "updated_at"])
+    create_patient_timeline_event(
+        patient=task.ipd_admission.patient,
+        hospital_id=task.ipd_admission.hospital_id,
+        ipd_admission=task.ipd_admission,
+        event_type=PatientTimeline.EventType.TREATMENT_DONE,
+        title=f"{task.plan_item.title} marked done",
+        description=notes or "Treatment task completed by staff.",
+        timestamp=task.completed_at,
+        treatment_plan=task.plan_item.plan,
+        treatment_item=task.plan_item,
+        treatment_task=task,
+        created_by=completed_by,
+    )
     return task
 
 

@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from apps.inventory.services.stock_service import deduct_stock_fifo, get_batch_available_qty
 
+from apps.pharmacy.invoice_number import next_pharmacy_invoice_number
 from apps.pharmacy.models import PharmacyInvoice, PharmacyInvoiceItem, PharmacyOutletSettings, PharmacySupplier
 from apps.pharmacy.purchase_challan import process_purchase_challan
 from apps.pharmacy.purchase_history import detail_purchase_history, list_purchase_history
@@ -84,6 +85,18 @@ class PharmacySupplierViewSet(viewsets.ModelViewSet):
         return PharmacySupplier.objects.filter(hospital_id=hid, is_active=True).order_by("name")
 
 
+class PharmacyNextInvoiceNumberView(APIView):
+    """GET /api/v1/pharmacy/invoice/next-number/ — preview next INV-{YYYY}-{seq} (not reserved)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        hospital = getattr(request.user, "hospital", None)
+        if hospital is None:
+            return Response({"success": False, "detail": "Hospital context required."}, status=status.HTTP_400_BAD_REQUEST)
+        return success_response({"invoice_no": next_pharmacy_invoice_number(hospital.id)})
+
+
 class PharmacyInvoiceViewSet(viewsets.ModelViewSet):
     queryset = PharmacyInvoice.objects.all().order_by("-created_at")
     serializer_class = PharmacyInvoiceSerializer
@@ -93,10 +106,13 @@ class PharmacyInvoiceViewSet(viewsets.ModelViewSet):
         return super().get_queryset().filter(hospital=self.request.user.hospital)
 
     def perform_create(self, serializer):
-        import uuid
-
-        invoice_no = f"PHR-{uuid.uuid4().hex[:8].upper()}"
-        serializer.save(hospital=self.request.user.hospital, created_by=self.request.user, invoice_no=invoice_no)
+        hospital = self.request.user.hospital
+        raw = (serializer.validated_data.get("invoice_no") or "").strip()
+        if raw:
+            invoice_no = raw
+        else:
+            invoice_no = next_pharmacy_invoice_number(hospital.id)
+        serializer.save(hospital=hospital, created_by=self.request.user, invoice_no=invoice_no)
 
 
 class PharmacyInvoiceItemViewSet(viewsets.ModelViewSet):
@@ -113,7 +129,12 @@ class PharmacyInvoiceItemViewSet(viewsets.ModelViewSet):
         inv = item.invoice
         hospital = inv.hospital
         batch = item.batch
-        if batch.expiry_date and batch.expiry_date < timezone.now().date():
+        allow_expired = str(self.request.query_params.get("allow_expired", "")).lower() in ("1", "true", "yes")
+        if (
+            batch.expiry_date
+            and batch.expiry_date < timezone.now().date()
+            and not allow_expired
+        ):
             raise serializers.ValidationError({"batch": ["This batch is expired and cannot be sold."]})
         available = get_batch_available_qty(batch)
         if available < item.qty:

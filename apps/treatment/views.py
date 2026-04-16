@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.db.models import Q
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import permissions, status, viewsets
@@ -7,17 +8,33 @@ from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
 
+from rest_framework.views import APIView
+
 from apps.roles_permissions.permissions import HasRequiredPermission
-from apps.treatment.models import TreatmentPlan, TreatmentPlanItem, TreatmentTask
+from apps.treatment.models import (
+    PatientTimeline,
+    TreatmentPlan,
+    TreatmentPlanItem,
+    TreatmentPlanStaffAssignment,
+    TreatmentTask,
+)
 from apps.treatment.serializers import (
+    PatientTimelineSerializer,
     TreatmentPlanCreateUpdateSerializer,
     TreatmentPlanItemCreateUpdateSerializer,
     TreatmentPlanItemSerializer,
     TreatmentPlanSerializer,
+    TreatmentPlanStaffAssignmentCreateSerializer,
+    TreatmentPlanStaffAssignmentSerializer,
     TreatmentTaskSerializer,
     TreatmentTaskStatusUpdateSerializer,
 )
-from apps.treatment.services import cancel_plan, complete_task, generate_tasks_for_plan
+from apps.treatment.services import (
+    cancel_plan,
+    complete_task,
+    create_patient_timeline_event,
+    generate_tasks_for_plan,
+)
 
 
 class HospitalScopedMixin:
@@ -64,13 +81,65 @@ class TreatmentPlanViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
             hospital_id=user.hospital_id,
             created_by=user,
         )
-        # Auto-generate tasks immediately for the plan's date range.
         generate_tasks_for_plan(plan, plan.start_date, plan.end_date or plan.start_date)
+        create_patient_timeline_event(
+            patient=plan.ipd_admission.patient,
+            hospital_id=plan.hospital_id,
+            ipd_admission=plan.ipd_admission,
+            event_type=PatientTimeline.EventType.PLAN_SAVED,
+            title=f"Treatment plan saved: {plan.name or 'Treatment Plan'}",
+            description=f"{plan.items.filter(is_active=True).count()} items scheduled.",
+            treatment_plan=plan,
+            created_by=user,
+        )
+
+        from apps.notifications.helpers import notify_treatment_assigned
+        for sa in plan.staff_assignments.select_related("staff__user").all():
+            staff_user = getattr(sa.staff, "user", None)
+            if staff_user:
+                patient_name = ""
+                try:
+                    patient_name = plan.ipd_admission.patient.first_name
+                except Exception:
+                    pass
+                notify_treatment_assigned(
+                    hospital_id=plan.hospital_id,
+                    recipient=staff_user,
+                    patient_name=patient_name,
+                    plan_name=plan.name or "Unnamed Plan",
+                    plan_id=plan.id,
+                )
 
     def perform_update(self, serializer):
         plan = serializer.save()
-        # Re-generate / update tasks for any pending items.
         generate_tasks_for_plan(plan, plan.start_date, plan.end_date or plan.start_date)
+        create_patient_timeline_event(
+            patient=plan.ipd_admission.patient,
+            hospital_id=plan.hospital_id,
+            ipd_admission=plan.ipd_admission,
+            event_type=PatientTimeline.EventType.PLAN_SAVED,
+            title=f"Treatment plan saved: {plan.name or 'Treatment Plan'}",
+            description=f"{plan.items.filter(is_active=True).count()} items scheduled.",
+            treatment_plan=plan,
+            created_by=self.request.user,
+        )
+
+        from apps.notifications.helpers import notify_treatment_updated
+        for sa in plan.staff_assignments.select_related("staff__user").all():
+            staff_user = getattr(sa.staff, "user", None)
+            if staff_user:
+                patient_name = ""
+                try:
+                    patient_name = plan.ipd_admission.patient.first_name
+                except Exception:
+                    pass
+                notify_treatment_updated(
+                    hospital_id=plan.hospital_id,
+                    recipient=staff_user,
+                    patient_name=patient_name,
+                    plan_name=plan.name or "Unnamed Plan",
+                    plan_id=plan.id,
+                )
 
     @action(detail=True, methods=["post"], url_path="generate-tasks")
     def generate_tasks(self, request, pk=None):
@@ -95,6 +164,88 @@ class TreatmentPlanViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
         plan = self.get_object()
         cancel_plan(plan=plan, cancelled_by=request.user)
         return Response({"detail": "Plan cancelled."})
+
+    @action(detail=True, methods=["post"], url_path="lock")
+    def lock(self, request, pk=None):
+        """Lock plan and notify all assigned staff."""
+        plan = self.get_object()
+        if plan.status not in (TreatmentPlan.Status.ACTIVE,):
+            return Response({"detail": f"Cannot lock plan with status '{plan.status}'."}, status=status.HTTP_400_BAD_REQUEST)
+        plan.status = TreatmentPlan.Status.LOCKED
+        plan.save(update_fields=["status", "updated_at"])
+
+        from apps.notifications.helpers import notify_treatment_assigned
+        for sa in plan.staff_assignments.select_related("staff__user").all():
+            staff_user = getattr(sa.staff, "user", None)
+            if staff_user:
+                patient_name = ""
+                try:
+                    patient_name = plan.ipd_admission.patient.first_name
+                except Exception:
+                    pass
+                notify_treatment_assigned(
+                    hospital_id=plan.hospital_id,
+                    recipient=staff_user,
+                    patient_name=patient_name,
+                    plan_name=plan.name or "Treatment Plan",
+                    plan_id=plan.id,
+                )
+        return Response({"detail": "Plan locked and staff notified.", "status": plan.status})
+
+    @action(detail=True, methods=["post"], url_path="unlock")
+    def unlock(self, request, pk=None):
+        """Unlock a locked plan for editing."""
+        plan = self.get_object()
+        if plan.status != TreatmentPlan.Status.LOCKED:
+            return Response({"detail": f"Plan is not locked (status: '{plan.status}')."}, status=status.HTTP_400_BAD_REQUEST)
+        plan.status = TreatmentPlan.Status.ACTIVE
+        plan.save(update_fields=["status", "updated_at"])
+        return Response({"detail": "Plan unlocked for editing.", "status": plan.status})
+
+    @action(detail=True, methods=["get", "post"], url_path="staff-assignments")
+    def staff_assignments(self, request, pk=None):
+        """GET: list staff assigned to this plan. POST: assign a staff member."""
+        plan = self.get_object()
+        if request.method == "GET":
+            qs = TreatmentPlanStaffAssignment.objects.filter(plan=plan).select_related(
+                "staff", "staff__designation", "staff__department"
+            )
+            return Response(TreatmentPlanStaffAssignmentSerializer(qs, many=True).data)
+
+        ser = TreatmentPlanStaffAssignmentCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        assignment = ser.save(plan=plan, assigned_by=request.user)
+
+        from apps.notifications.helpers import notify_treatment_assigned
+        staff_user = getattr(assignment.staff, "user", None)
+        if staff_user:
+            patient_name = ""
+            try:
+                patient_name = plan.ipd_admission.patient.first_name
+            except Exception:
+                pass
+            notify_treatment_assigned(
+                hospital_id=plan.hospital_id,
+                recipient=staff_user,
+                patient_name=patient_name,
+                plan_name=plan.name or "Unnamed Plan",
+                plan_id=plan.id,
+            )
+
+        return Response(
+            TreatmentPlanStaffAssignmentSerializer(assignment).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["delete"], url_path="staff-assignments/(?P<assignment_pk>[^/.]+)")
+    def remove_staff_assignment(self, request, pk=None, assignment_pk=None):
+        plan = self.get_object()
+        try:
+            assignment = TreatmentPlanStaffAssignment.objects.get(pk=assignment_pk, plan=plan)
+        except TreatmentPlanStaffAssignment.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        assignment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -190,7 +341,10 @@ class TreatmentTaskViewSet(viewsets.ModelViewSet):
                 user=user, is_deleted=False
             ).first()
             if staff:
-                qs = qs.filter(assigned_staff=staff)
+                qs = qs.filter(
+                    Q(assigned_staff=staff)
+                    | Q(assigned_staff__isnull=True, plan_item__plan__staff_assignments__staff=staff)
+                ).distinct()
             else:
                 qs = qs.none()
 
@@ -219,4 +373,103 @@ class TreatmentTaskViewSet(viewsets.ModelViewSet):
         task.status = TreatmentTask.Status.SKIPPED
         task.notes_from_staff = request.data.get("notes", task.notes_from_staff)
         task.save(update_fields=["status", "notes_from_staff", "updated_at"])
+        create_patient_timeline_event(
+            patient=task.ipd_admission.patient,
+            hospital_id=task.ipd_admission.hospital_id,
+            ipd_admission=task.ipd_admission,
+            event_type=PatientTimeline.EventType.TREATMENT_SKIPPED,
+            title=f"{task.plan_item.title} skipped",
+            description=task.notes_from_staff or "Treatment task marked as skipped.",
+            treatment_plan=task.plan_item.plan,
+            treatment_item=task.plan_item,
+            treatment_task=task,
+            created_by=request.user,
+        )
         return Response(TreatmentTaskSerializer(task, context={"request": request}).data)
+
+
+class PatientTimelineViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only patient timeline for treatment audit history.
+    Supports:
+      - ?patient=<uuid>
+      - ?ipd_admission=<uuid>
+    """
+
+    queryset = PatientTimeline.objects.all().select_related(
+        "patient",
+        "ipd_admission",
+        "treatment_plan",
+        "treatment_item",
+        "treatment_task",
+    )
+    serializer_class = PatientTimelineSerializer
+    filter_backends = (DjangoFilterBackend, OrderingFilter)
+    filterset_fields = ("patient", "ipd_admission", "event_type")
+    ordering_fields = ("timestamp", "created_at")
+    ordering = ("-timestamp", "-created_at")
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser:
+            return qs
+        return qs.filter(hospital_id=user.hospital_id)
+
+
+class PatientPlanOverviewView(APIView):
+    """GET /api/v1/treatment/patient-overview/ — patient cards for treatment plan module."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        from django.db.models import Count, Q
+        from apps.ipd.models import IPDAdmission
+
+        hid = getattr(request.user, "hospital_id", None)
+        if not hid and not request.user.is_superuser:
+            # Avoid noisy 400s when frontend briefly calls before auth/user hydration.
+            return Response([])
+
+        admissions_qs = IPDAdmission.objects.filter(status="admitted")
+        if not request.user.is_superuser:
+            admissions_qs = admissions_qs.filter(hospital_id=hid)
+        admissions = admissions_qs.select_related("patient").order_by("-created_at")
+
+        results = []
+        for adm in admissions:
+            plans = TreatmentPlan.objects.filter(ipd_admission=adm)
+            plan_count = plans.count()
+            active_plans = plans.filter(status=TreatmentPlan.Status.ACTIVE)
+
+            if active_plans.exists():
+                plan_status = "Active"
+            elif plans.filter(status=TreatmentPlan.Status.COMPLETED).exists():
+                plan_status = "Completed"
+            else:
+                plan_status = "No Plan"
+
+            staff_ids = set()
+            staff_names = []
+            for p in active_plans:
+                for sa in p.staff_assignments.select_related("staff").all():
+                    if sa.staff_id not in staff_ids:
+                        staff_ids.add(sa.staff_id)
+                        name = f"{(sa.staff.first_name or '').strip()} {(sa.staff.last_name or '').strip()}".strip()
+                        staff_names.append(name or sa.staff.employee_code or str(sa.staff_id))
+
+            patient = adm.patient
+            results.append({
+                "admission_id": str(adm.id),
+                "patient_id": str(patient.id),
+                "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+                "uhid": patient.uhid,
+                "admission_type": "IPD",
+                "plan_status": plan_status,
+                "plan_count": plan_count,
+                "assigned_staff_count": len(staff_ids),
+                "assigned_staff_names": staff_names,
+            })
+
+        return Response(results)
