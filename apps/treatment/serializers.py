@@ -1,6 +1,21 @@
 from rest_framework import serializers
 
-from apps.treatment.models import TreatmentPlan, TreatmentPlanItem, TreatmentTask
+from apps.treatment.models import (
+    PatientTimeline,
+    TreatmentPlan,
+    TreatmentPlanItem,
+    TreatmentPlanStaffAssignment,
+    TreatmentTask,
+)
+
+
+def _safe_patient_name(patient):
+    if not patient:
+        return None
+    first = (getattr(patient, "first_name", "") or "").strip()
+    last = (getattr(patient, "last_name", "") or "").strip()
+    full = f"{first} {last}".strip()
+    return full or getattr(patient, "uhid", None)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -34,7 +49,7 @@ class TreatmentPlanSerializer(serializers.ModelSerializer):
 
     def get_patient_name(self, obj):
         try:
-            return obj.ipd_admission.patient.full_name
+            return _safe_patient_name(obj.ipd_admission.patient)
         except Exception:
             return None
 
@@ -45,7 +60,8 @@ class TreatmentPlanSerializer(serializers.ModelSerializer):
 class TreatmentPlanCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TreatmentPlan
-        fields = ["ipd_admission", "name", "notes", "start_date", "end_date", "status"]
+        fields = ["id", "ipd_admission", "name", "notes", "start_date", "end_date", "status"]
+        read_only_fields = ["id"]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -120,6 +136,7 @@ class TreatmentTaskSerializer(serializers.ModelSerializer):
     patient_name = serializers.SerializerMethodField()
     item_title = serializers.CharField(source="plan_item.title", read_only=True)
     item_category = serializers.CharField(source="plan_item.category", read_only=True)
+    bed_code = serializers.CharField(source="ipd_admission.bed_code", read_only=True)
     assigned_staff_name = serializers.SerializerMethodField()
     completed_by_email = serializers.EmailField(source="completed_by.email", read_only=True)
 
@@ -131,6 +148,7 @@ class TreatmentTaskSerializer(serializers.ModelSerializer):
             "plan_item",
             "item_title",
             "item_category",
+            "bed_code",
             "ipd_admission",
             "patient_name",
             "date",
@@ -150,7 +168,7 @@ class TreatmentTaskSerializer(serializers.ModelSerializer):
 
     def get_patient_name(self, obj):
         try:
-            return obj.ipd_admission.patient.full_name
+            return _safe_patient_name(obj.ipd_admission.patient)
         except Exception:
             return None
 
@@ -167,3 +185,80 @@ class TreatmentTaskStatusUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TreatmentTask
         fields = ["status", "priority", "notes_from_staff"]
+
+
+class TreatmentPlanStaffAssignmentSerializer(serializers.ModelSerializer):
+    staff_name = serializers.SerializerMethodField()
+    staff_designation = serializers.CharField(source="staff.designation.name", read_only=True, default="")
+    staff_department = serializers.CharField(source="staff.department.name", read_only=True, default="")
+
+    class Meta:
+        model = TreatmentPlanStaffAssignment
+        fields = [
+            "id",
+            "plan",
+            "staff",
+            "staff_name",
+            "staff_designation",
+            "staff_department",
+            "assigned_by",
+            "role_label",
+            "created_at",
+        ]
+        read_only_fields = ["id", "assigned_by", "created_at"]
+
+    def get_staff_name(self, obj):
+        if obj.staff:
+            parts = f"{(obj.staff.first_name or '').strip()} {(obj.staff.last_name or '').strip()}".strip()
+            return parts or obj.staff.employee_code or str(obj.staff.id)
+        return None
+
+
+class TreatmentPlanStaffAssignmentCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TreatmentPlanStaffAssignment
+        fields = ["plan", "staff", "role_label"]
+        extra_kwargs = {
+            "plan": {"required": False},
+        }
+
+
+class PatientPlanOverviewSerializer(serializers.Serializer):
+    """Read-only overview for patient selection grid."""
+    admission_id = serializers.UUIDField()
+    patient_id = serializers.UUIDField()
+    patient_name = serializers.CharField()
+    uhid = serializers.CharField()
+    admission_type = serializers.CharField()
+    plan_status = serializers.CharField()
+    plan_count = serializers.IntegerField()
+    assigned_staff_count = serializers.IntegerField()
+    assigned_staff_names = serializers.ListField(child=serializers.CharField())
+
+
+class PatientTimelineSerializer(serializers.ModelSerializer):
+    patient_name = serializers.SerializerMethodField()
+    treatment_item_title = serializers.CharField(source="treatment_item.title", read_only=True)
+
+    class Meta:
+        model = PatientTimeline
+        fields = [
+            "id",
+            "patient",
+            "patient_name",
+            "ipd_admission",
+            "event_type",
+            "title",
+            "description",
+            "timestamp",
+            "treatment_plan",
+            "treatment_item",
+            "treatment_item_title",
+            "treatment_task",
+        ]
+
+    def get_patient_name(self, obj):
+        try:
+            return _safe_patient_name(obj.patient)
+        except Exception:
+            return None

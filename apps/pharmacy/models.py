@@ -1,6 +1,7 @@
 from decimal import Decimal
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 from apps.shared.models import Hospital, TimeStampedModel, UUIDPrimaryKeyModel
 from apps.patients.models import Patient
 from apps.doctors.models import DoctorProfile
@@ -143,7 +144,7 @@ class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
     referred_by = models.ForeignKey(DoctorProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name="pharmacy_referrals")
     
     invoice_no = models.CharField(max_length=50, unique=True)
-    date = models.DateField(auto_now_add=True)
+    date = models.DateField(default=timezone.localdate)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     
     gst_enabled = models.BooleanField(default=True)

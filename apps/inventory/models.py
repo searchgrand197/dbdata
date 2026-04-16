@@ -25,11 +25,14 @@ class Medicine(TimeStampedModel, UUIDPrimaryKeyModel):
     hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="medicines")
     sku = models.CharField(max_length=80)
     name = models.CharField(max_length=250)
+    company_name = models.CharField(max_length=200, blank=True, default="")
     form = models.CharField(max_length=100, blank=True, default="")
+    composition = models.CharField(max_length=250, blank=True, default="")
     strength = models.CharField(max_length=100, blank=True, default="")
     unit = models.ForeignKey(Unit, on_delete=models.PROTECT, related_name="medicines")
     hsn_code = models.CharField(max_length=20, blank=True, default="")
     pack_info = models.CharField(max_length=50, blank=True, default="") # e.g. 10x15
+    default_mrp = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     # Maps pack label (strip, box, carton) to number of base units (e.g. tablets) in that pack.
     unit_conversions = models.JSONField(default=dict, blank=True)
     gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
@@ -37,6 +40,19 @@ class Medicine(TimeStampedModel, UUIDPrimaryKeyModel):
 
     class Meta:
         unique_together = [("hospital", "sku")]
+        indexes = [models.Index(fields=["hospital", "name"])]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class MedicineCategory(TimeStampedModel, UUIDPrimaryKeyModel):
+    hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="medicine_categories")
+    name = models.CharField(max_length=120)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [("hospital", "name")]
         indexes = [models.Index(fields=["hospital", "name"])]
 
     def __str__(self) -> str:

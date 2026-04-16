@@ -16,8 +16,6 @@ api.interceptors.request.use(cfg => {
   const token = localStorage.getItem('access')
   if (token) cfg.headers.Authorization = `Bearer ${token}`
 
-  // Auto-inject hospital_id into every mutating request body so superuser
-  // requests work without callers having to remember to add it manually.
   const hospitalId = getHospitalId()
   if (hospitalId && ['post', 'put', 'patch'].includes((cfg.method || '').toLowerCase())) {
     if (cfg.data && typeof cfg.data === 'object' && !(cfg.data instanceof FormData)) {
@@ -30,24 +28,49 @@ api.interceptors.request.use(cfg => {
   return cfg
 })
 
+let refreshPromise = null
+
 api.interceptors.response.use(
   r => r,
   async err => {
-    if (err.response?.status === 401) {
+    const originalRequest = err.config
+    if (err.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true
       const refresh = localStorage.getItem('refresh')
-      if (refresh) {
-        try {
-          // Use SimpleJWT refresh endpoint: POST /api/v1/auth/refresh/
-          const { data } = await axios.post('/api/v1/auth/refresh/', { refresh })
-          const access = data?.access || data?.data?.access
-          if (!access) throw new Error('No access token in refresh response')
-          localStorage.setItem('access', access)
-          err.config.headers.Authorization = `Bearer ${access}`
-          return api(err.config)
-        } catch {
-          localStorage.clear()
-          window.location.href = '/login'
-        }
+      if (!refresh) {
+        localStorage.clear()
+        window.location.href = '/login'
+        return Promise.reject(err)
+      }
+
+      // Deduplicate: if a refresh is already in-flight, wait for it
+      if (!refreshPromise) {
+        refreshPromise = axios
+          .post('/api/v1/auth/refresh/', { refresh })
+          .then(({ data }) => {
+            const access = data?.access || data?.data?.access
+            const newRefresh = data?.refresh || data?.data?.refresh
+            if (!access) throw new Error('No access token in refresh response')
+            localStorage.setItem('access', access)
+            if (newRefresh) localStorage.setItem('refresh', newRefresh)
+            return access
+          })
+          .catch(refreshErr => {
+            localStorage.clear()
+            window.location.href = '/login'
+            return Promise.reject(refreshErr)
+          })
+          .finally(() => {
+            refreshPromise = null
+          })
+      }
+
+      try {
+        const newAccess = await refreshPromise
+        originalRequest.headers.Authorization = `Bearer ${newAccess}`
+        return api(originalRequest)
+      } catch {
+        return Promise.reject(err)
       }
     }
     return Promise.reject(err)

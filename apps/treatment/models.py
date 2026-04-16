@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models
 
 from apps.ipd.models import IPDAdmission
+from apps.patients.models import Patient
 from apps.shared.models import Hospital, TimeStampedModel, UUIDPrimaryKeyModel
 from apps.staff.models import Department, Designation, StaffProfile
 
@@ -16,6 +17,7 @@ class TreatmentPlan(TimeStampedModel, UUIDPrimaryKeyModel):
 
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
+        LOCKED = "locked", "Locked"
         COMPLETED = "completed", "Completed"
         CANCELLED = "cancelled", "Cancelled"
 
@@ -178,3 +180,89 @@ class TreatmentTask(TimeStampedModel, UUIDPrimaryKeyModel):
 
     def __str__(self) -> str:
         return f"{self.plan_item.title} – {self.date} ({self.status})"
+
+
+class TreatmentPlanStaffAssignment(TimeStampedModel, UUIDPrimaryKeyModel):
+    """Links multiple staff to a treatment plan for coordinated care."""
+
+    plan = models.ForeignKey(TreatmentPlan, on_delete=models.CASCADE, related_name="staff_assignments")
+    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name="treatment_plan_assignments")
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tp_staff_assignments_made",
+    )
+    role_label = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        unique_together = [("plan", "staff")]
+        indexes = [models.Index(fields=["plan", "staff"])]
+
+    def __str__(self):
+        return f"{self.staff} → Plan {self.plan_id}"
+
+
+class PatientTimeline(TimeStampedModel, UUIDPrimaryKeyModel):
+    """Audit-friendly treatment timeline events for a patient."""
+
+    class EventType(models.TextChoices):
+        PLAN_SAVED = "plan_saved", "Treatment Plan Saved"
+        TREATMENT_DONE = "treatment_done", "Treatment Done"
+        TREATMENT_SKIPPED = "treatment_skipped", "Treatment Skipped"
+
+    hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="patient_timeline_events")
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="treatment_timeline_events")
+    ipd_admission = models.ForeignKey(
+        IPDAdmission,
+        on_delete=models.CASCADE,
+        related_name="patient_timeline_events",
+        null=True,
+        blank=True,
+    )
+
+    event_type = models.CharField(max_length=30, choices=EventType.choices, db_index=True)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    timestamp = models.DateTimeField(db_index=True)
+
+    treatment_plan = models.ForeignKey(
+        "TreatmentPlan",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="timeline_events",
+    )
+    treatment_item = models.ForeignKey(
+        "TreatmentPlanItem",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="timeline_events",
+    )
+    treatment_task = models.ForeignKey(
+        "TreatmentTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="timeline_events",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="patient_timeline_events_created",
+    )
+
+    class Meta:
+        ordering = ["-timestamp", "-created_at"]
+        indexes = [
+            models.Index(fields=["hospital", "patient", "timestamp"]),
+            models.Index(fields=["ipd_admission", "timestamp"]),
+            models.Index(fields=["event_type", "timestamp"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.patient_id} - {self.event_type} - {self.timestamp}"

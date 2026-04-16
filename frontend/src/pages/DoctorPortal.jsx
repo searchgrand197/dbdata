@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import Layout from '../components/Layout'
 import DoctorAnalytics from '../components/DoctorAnalytics'
+import TreatmentPlansModule from '../components/TreatmentPlansModule'
 import api from '../api'
 import toast from 'react-hot-toast'
 import { format, addDays } from 'date-fns'
 import {
   Users, ChevronRight, ClipboardList, Plus, Trash2,
-  Clock, CheckCircle, ArrowRight, GripVertical, Stethoscope, X, Mic, MicOff
+  Clock, CheckCircle, ArrowRight, GripVertical, Stethoscope, X, Mic, MicOff, UserPlus,
+  CalendarClock, Receipt, Activity, Pill, Scissors, FileText
 } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors
@@ -23,6 +25,27 @@ const TABS = [
 ]
 
 const DAYS = ['Day 1', 'Day 2', 'Day 3', 'Day 4']
+
+const TIMELINE_CATEGORY_META = {
+  Appointment: { icon: CalendarClock, iconClass: 'text-sky-600' },
+  Billing: { icon: Receipt, iconClass: 'text-emerald-600' },
+  Condition: { icon: Activity, iconClass: 'text-violet-600' },
+  Medicines: { icon: Pill, iconClass: 'text-blue-600' },
+  Procedures: { icon: Scissors, iconClass: 'text-amber-600' },
+}
+
+const TIMELINE_FILTERS = [
+  { id: 'all', label: 'All', categories: null },
+  { id: 'medicines', label: 'Medicines', categories: ['Medicines'] },
+  { id: 'billing', label: 'Billing', categories: ['Billing'] },
+  { id: 'notes', label: 'Notes', categories: ['Condition', 'Appointment', 'Procedures'] },
+]
+
+const TREATMENT_EVENT_STATUS = {
+  plan_saved: { icon: '⏳', color: 'text-amber-700' },
+  treatment_done: { icon: '✔✔', color: 'text-emerald-700' },
+  treatment_skipped: { icon: '❌', color: 'text-rose-700' },
+}
 
 const FREQ_MAP = {
   'OD': ['08:00'],
@@ -105,6 +128,94 @@ const pkgColors = {
   yellow: { bg: 'bg-yellow-100', border: 'border-yellow-300', text: 'text-yellow-800', btn: 'bg-yellow-200 hover:bg-yellow-300 text-yellow-800' },
 }
 
+const COPY_DISABLED_TOAST_MESSAGE = 'Copy disabled for security reasons'
+const COPY_DISABLED_TOAST_COOLDOWN_MS = 2000
+const ADMIN_ROLES = new Set(['admin', 'superadmin'])
+
+function useDoctorPortalCopyProtection(scopeRef, { enabled }) {
+  const lastToastAtRef = useRef(0)
+
+  useEffect(() => {
+    if (!enabled) return undefined
+    const scopeEl = scopeRef.current
+    if (!scopeEl) return undefined
+
+    const isEditableTarget = (target) => {
+      if (!(target instanceof Element)) return false
+      return Boolean(
+        target.closest(
+          'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]',
+        ),
+      )
+    }
+
+    const shouldBlock = (target) => {
+      if (!(target instanceof Element)) return false
+      if (!scopeEl.contains(target)) return false
+      if (!target.closest('[data-no-copy="true"]')) return false
+      if (isEditableTarget(target)) return false
+      return true
+    }
+
+    const showSecurityToast = () => {
+      const now = Date.now()
+      if (now - lastToastAtRef.current < COPY_DISABLED_TOAST_COOLDOWN_MS) return
+      lastToastAtRef.current = now
+      toast(COPY_DISABLED_TOAST_MESSAGE, { icon: '🔒' })
+    }
+
+    const handleClipboardEvent = (event) => {
+      if (!shouldBlock(event.target)) return
+      event.preventDefault()
+      showSecurityToast()
+    }
+
+    const handleContextMenu = (event) => {
+      if (!shouldBlock(event.target)) return
+      event.preventDefault()
+      showSecurityToast()
+    }
+
+    const handleDragStart = (event) => {
+      if (!shouldBlock(event.target)) return
+      event.preventDefault()
+      showSecurityToast()
+    }
+
+    const handleSelectStart = (event) => {
+      if (!shouldBlock(event.target)) return
+      event.preventDefault()
+    }
+
+    const handleKeyDown = (event) => {
+      const key = String(event.key || '').toLowerCase()
+      const isCopyShortcut = (event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'a'].includes(key)
+      if (!isCopyShortcut) return
+      if (!shouldBlock(event.target)) return
+      event.preventDefault()
+      showSecurityToast()
+    }
+
+    document.addEventListener('copy', handleClipboardEvent, true)
+    document.addEventListener('cut', handleClipboardEvent, true)
+    document.addEventListener('paste', handleClipboardEvent, true)
+    document.addEventListener('contextmenu', handleContextMenu, true)
+    document.addEventListener('dragstart', handleDragStart, true)
+    document.addEventListener('selectstart', handleSelectStart, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+
+    return () => {
+      document.removeEventListener('copy', handleClipboardEvent, true)
+      document.removeEventListener('cut', handleClipboardEvent, true)
+      document.removeEventListener('paste', handleClipboardEvent, true)
+      document.removeEventListener('contextmenu', handleContextMenu, true)
+      document.removeEventListener('dragstart', handleDragStart, true)
+      document.removeEventListener('selectstart', handleSelectStart, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [enabled, scopeRef])
+}
+
 function suggestIconsByName(name = '') {
   const n = name.toLowerCase()
   if (n.includes('glucose') || n.includes('fluid') || n.includes('iv')) return ['💧', '🧪', '💊']
@@ -149,14 +260,22 @@ function TemplateCard({ item, onAdd, dayIdx }) {
 }
 
 // ─── Sortable task row ───────────────────────────────────────────────────────
-function SortableTaskRow({ task, onRemove, onUpdate }) {
+function SortableTaskRow({ task, onRemove, onUpdate, isFocused = false }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task._id })
   const style = { transform: CSS.Transform.toString(transform), transition }
+  const taskStatus = task._taskStatus || ''
+  const isPerformed = taskStatus === 'done' || taskStatus === 'skipped'
 
   return (
     <div ref={setNodeRef} style={style}
-      className="flex items-center gap-2 bg-gray-50 rounded-xl px-2 py-2 border border-gray-100 hover:shadow-sm transition-shadow">
-      <button {...attributes} {...listeners} className="text-gray-300 hover:text-gray-400 cursor-grab px-1">
+      className={`flex items-center gap-2 rounded-xl px-2 py-2 border transition-shadow ${
+        isFocused
+          ? 'ring-1 ring-blue-400 bg-blue-50 border-blue-200'
+          : isPerformed
+            ? (taskStatus === 'done' ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200')
+            : 'bg-gray-50 border-gray-100 hover:shadow-sm'
+      }`}>
+      <button {...attributes} {...listeners} disabled={isPerformed} className={`px-1 ${isPerformed ? 'text-slate-300 cursor-not-allowed' : 'text-gray-300 hover:text-gray-400 cursor-grab'}`}>
         <GripVertical size={14} />
       </button>
 
@@ -167,7 +286,8 @@ function SortableTaskRow({ task, onRemove, onUpdate }) {
       <input 
         value={task.title} 
         onChange={e => onUpdate(task._id, 'title', e.target.value)}
-        className="flex-1 text-xs bg-transparent outline-none font-bold text-gray-700 min-w-0 px-1" 
+        disabled={isPerformed}
+        className={`flex-1 text-xs bg-transparent outline-none font-bold min-w-0 px-1 ${isPerformed ? 'text-slate-700' : 'text-gray-700'}`} 
       />
 
       {/* Properly Visible Time Input */}
@@ -176,13 +296,20 @@ function SortableTaskRow({ task, onRemove, onUpdate }) {
           type="time" 
           value={task.time_of_day || '08:00'} 
           onChange={e => onUpdate(task._id, 'time_of_day', e.target.value)}
-          className="text-xs font-black text-gray-800 bg-transparent outline-none border-none w-full cursor-pointer h-5" 
+          disabled={isPerformed}
+          className={`text-xs font-black bg-transparent outline-none border-none w-full h-5 ${isPerformed ? 'text-slate-700 cursor-not-allowed' : 'text-gray-800 cursor-pointer'}`} 
         />
       </div>
 
-      <button onClick={() => onRemove(task._id)} className="text-gray-300 hover:text-red-500 transition-colors p-1">
-        <Trash2 size={14} />
-      </button>
+      {isPerformed ? (
+        <span className={`text-[10px] px-2 py-1 rounded font-bold shrink-0 ${taskStatus === 'done' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+          {taskStatus === 'done' ? 'Done' : 'Skipped'}
+        </span>
+      ) : (
+        <button onClick={() => onRemove(task._id)} className="text-gray-300 hover:text-red-500 transition-colors p-1">
+          <Trash2 size={14} />
+        </button>
+      )}
     </div>
   )
 }
@@ -357,6 +484,149 @@ function AutoSavePopup({ prompt, onAccept, onReject }) {
   );
 }
 
+function PatientHistoryTimeline({ events = [], filter = 'all', onFilterChange, maxHeightClass = 'max-h-[360px]' }) {
+  const activeFilter = TIMELINE_FILTERS.find((f) => f.id === filter) || TIMELINE_FILTERS[0]
+  const filteredEvents = (events || []).filter((event) => {
+    if (!activeFilter.categories) return true
+    return activeFilter.categories.includes(event.category)
+  })
+  const groupedByDate = filteredEvents.reduce((acc, event) => {
+    const dateKey = format(new Date(event.ts), 'dd MMM yyyy')
+    if (!acc[dateKey]) acc[dateKey] = []
+    acc[dateKey].push(event)
+    return acc
+  }, {})
+  const orderedDateKeys = Object.keys(groupedByDate).sort((a, b) => new Date(b) - new Date(a))
+  const orderedCategories = ['Appointment', 'Billing', 'Condition', 'Medicines', 'Procedures']
+
+  return (
+    <div className="w-[340px] shrink-0 border-l border-slate-200 pl-2.5">
+      <div className="sticky top-0 z-10 bg-white pb-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Patient History</p>
+          <FileText size={11} className="text-slate-400" />
+        </div>
+        <div className="mt-1 flex gap-1 overflow-x-auto whitespace-nowrap">
+          {TIMELINE_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => onFilterChange(f.id)}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold border transition-colors ${
+                filter === f.id
+                  ? 'border-slate-300 bg-slate-100 text-slate-700'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={`${maxHeightClass} overflow-y-auto pr-1 space-y-2.5`}>
+        {orderedDateKeys.length === 0 ? (
+          <p className="text-[11px] text-slate-400 py-3">No history entries</p>
+        ) : orderedDateKeys.map((dateKey) => {
+          const entries = groupedByDate[dateKey]
+          const categoryMap = entries.reduce((acc, item) => {
+            if (!acc[item.category]) acc[item.category] = []
+            acc[item.category].push(item)
+            return acc
+          }, {})
+          return (
+            <div key={dateKey} className="space-y-1">
+              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">{dateKey}</p>
+              {orderedCategories.map((category) => {
+                const categoryEntries = categoryMap[category] || []
+                if (categoryEntries.length === 0) return null
+                const meta = TIMELINE_CATEGORY_META[category]
+                const Icon = meta.icon
+                const sortedCategoryEntries = categoryEntries.sort((a, b) => new Date(a.ts) - new Date(b.ts))
+                return (
+                  <div key={`${dateKey}-${category}`} className="space-y-0.5">
+                    <div className="flex items-center gap-1">
+                      <Icon size={11} className={meta.iconClass} />
+                      <span className="text-[10px] font-semibold text-slate-600">{category}</span>
+                    </div>
+                    <ul className="pl-4 space-y-0.5">
+                      {sortedCategoryEntries.map((item) => (
+                        <li key={item.id} className="list-disc text-[11px] leading-4 text-slate-700">
+                          <span className="text-slate-500 mr-1">{format(new Date(item.ts), 'HH:mm')}</span>
+                          {item.text}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TreatmentAuditTimeline({ events = [], onSelectEvent, maxHeightClass = 'max-h-[560px]' }) {
+  const groupedByDate = (events || []).reduce((acc, event) => {
+    const dateKey = format(new Date(event.timestamp), 'dd MMM yyyy')
+    if (!acc[dateKey]) acc[dateKey] = []
+    acc[dateKey].push(event)
+    return acc
+  }, {})
+  const orderedDateKeys = Object.keys(groupedByDate).sort((a, b) => new Date(b) - new Date(a))
+
+  return (
+    <div className="h-full">
+      <div className="flex items-center justify-between pb-1.5">
+        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Patient Timeline</p>
+        <FileText size={11} className="text-slate-400" />
+      </div>
+      <div className={`${maxHeightClass} overflow-y-auto pr-1 space-y-2`}>
+        {orderedDateKeys.length === 0 ? (
+          <p className="text-[11px] text-slate-400 py-3">No audit events yet</p>
+        ) : orderedDateKeys.map((dateKey) => {
+          const entries = [...groupedByDate[dateKey]].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+          return (
+            <div key={dateKey} className="space-y-1">
+              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">{dateKey}</p>
+              <ul className="space-y-1">
+                {entries.map((event) => {
+                  const statusMeta = TREATMENT_EVENT_STATUS[event.event_type] || { icon: '⏳', color: 'text-slate-600' }
+                  return (
+                    <li key={event.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectEvent(event)}
+                        className="w-full text-left rounded px-1.5 py-1 hover:bg-slate-50 transition-colors"
+                        title={event.treatment_item_title ? `Open ${event.treatment_item_title}` : 'Timeline event'}
+                      >
+                        <div className="flex items-start gap-1.5">
+                          <span className={`text-[10px] font-bold shrink-0 ${statusMeta.color}`}>{statusMeta.icon}</span>
+                          <div className="min-w-0">
+                            <p className="text-[11px] text-slate-700 leading-4">
+                              <span className="text-slate-500 mr-1">{format(new Date(event.timestamp), 'HH:mm')}</span>
+                              <span className="font-semibold">{event.title}</span>
+                            </p>
+                            {event.description ? (
+                              <p className="text-[10px] text-slate-500 leading-4 truncate">{event.description}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Manual Follow-Up Date Component ─────────────────────────────────────────
 function ManualFollowUp({ visitId, existingDate }) {
   const [date, setDate] = useState(existingDate || '');
@@ -474,7 +744,7 @@ function AITransitionOverlay({ onDone }) {
           <div style={{
             width: '80px', height: '80px', borderRadius: '50%',
             background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)',
-            boxShadow: '0 0 40px rgba(139,92,246,0.8), 0 0 80px rgba(99,102,241,0.4)',
+            boxShadow: '0 0 40px rgba(139,92,246,0.8), 0 0 80px rgba(0, 0, 0, 0.4)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <Mic size={36} className="text-white" />
@@ -538,6 +808,30 @@ function OPDTab({ aiMode = false }) {
 
   const [autoSavePrompt, setAutoSavePrompt] = useState(null)
   const prevFollowupRef = useRef({})
+  const noteStartRef = useRef({})
+  const [historyByVisit, setHistoryByVisit] = useState({})
+  const [historyFilters, setHistoryFilters] = useState({})
+
+  const pushHistoryEvent = ({ visitId, category, text, ts = new Date().toISOString() }) => {
+    if (!visitId || !category || !text) return
+    setHistoryByVisit((prev) => {
+      const current = prev[visitId] || []
+      const next = [
+        ...current,
+        { id: `${visitId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, category, text, ts },
+      ].sort((a, b) => new Date(b.ts) - new Date(a.ts))
+      return { ...prev, [visitId]: next }
+    })
+  }
+
+  const inferCategoryFromNote = (text = '') => {
+    const lower = text.toLowerCase()
+    if (/(tablet|capsule|syrup|mg|ml|od|bd|tds|qid|drug|medicine|inj|injection|antibiotic)/.test(lower)) return 'Medicines'
+    if (/(procedure|suturing|dressing|drain|stitch|minor ot|operation|debridement)/.test(lower)) return 'Procedures'
+    if (/(bill|paid|payment|invoice|amount|discount)/.test(lower)) return 'Billing'
+    if (/(follow up|review on|next visit|appointment|revisit)/.test(lower)) return 'Appointment'
+    return 'Condition'
+  }
 
   useEffect(() => {
     if (!aiMode) return;
@@ -556,6 +850,25 @@ function OPDTab({ aiMode = false }) {
       }
     });
   }, [visits, aiMode]);
+
+  useEffect(() => {
+    setHistoryByVisit((prev) => {
+      let changed = false
+      const next = { ...prev }
+      visits.forEach((v) => {
+        if (!next[v.id]) {
+          changed = true
+          next[v.id] = [{
+            id: `seed-${v.id}`,
+            category: 'Appointment',
+            text: `Token #${v.token_number} visit opened`,
+            ts: new Date().toISOString(),
+          }]
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [visits])
 
   const acceptFollowUp = (visitId, days) => {
     const fupISODate = format(addDays(new Date(), days), 'yyyy-MM-dd');
@@ -610,9 +923,32 @@ function OPDTab({ aiMode = false }) {
     } catch { } // quiet fail
   }
 
+  function commitVisitNoteHistory(visit, text) {
+    const previousText = (noteStartRef.current[visit.id] ?? visit?.chief_complaint ?? '').trim()
+    const nextText = (text || '').trim()
+    if (!nextText || nextText === previousText) return
+    const category = inferCategoryFromNote(nextText)
+    const tail = nextText.length > 95 ? `${nextText.slice(0, 95)}...` : nextText
+    pushHistoryEvent({
+      visitId: visit.id,
+      category,
+      text: previousText ? `Updated note: ${tail}` : `Added note: ${tail}`,
+    })
+    noteStartRef.current[visit.id] = nextText
+  }
+
   function appendVisitNotes(id, currentText, newText) {
     const space = (currentText && currentText.trim().length > 0) ? ' ' : '';
     const updated = (currentText || '') + space + newText.trim();
+    const category = inferCategoryFromNote(newText)
+    const tail = newText.trim().length > 85 ? `${newText.trim().slice(0, 85)}...` : newText.trim()
+    if (tail) {
+      pushHistoryEvent({
+        visitId: id,
+        category,
+        text: `Dictated: ${tail}`,
+      })
+    }
     updateVisitNotes(id, updated);
   }
 
@@ -660,91 +996,110 @@ function OPDTab({ aiMode = false }) {
               ? format(addDays(new Date(), followupDays), 'yyyy-MM-dd')
               : null;
             return (
-            <div key={v.id} className="bg-white rounded-xl p-3 flex flex-col gap-3 shadow-sm">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-blue-600 rounded-xl text-white font-black text-lg flex items-center justify-center">{v.token_number}</div>
-                <div className="flex-1">
-                  <p className="font-semibold text-gray-800">{v.patient_name || 'Patient'}</p>
-                  <p className="text-xs text-gray-400">Time: {v.visit_time || ''}</p>
+            <div key={v.id} data-no-copy="true" className="doctor-no-copy bg-white rounded-xl p-2.5 flex gap-3 shadow-sm border border-slate-100">
+              <div className="flex-1 min-w-0 flex flex-col gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-600 rounded-xl text-white font-black text-lg flex items-center justify-center">{v.token_number}</div>
+                  <div className="flex-1">
+                    <p className="font-semibold text-gray-800">{v.patient_name || 'Patient'}</p>
+                    <p className="text-xs text-gray-400">Time: {v.visit_time || ''}</p>
+                  </div>
+                  <button onClick={() => completeVisit(v)}
+                    className="bg-green-600 text-white text-xs px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1 hover:bg-green-700">
+                    <CheckCircle size={12} /> Done
+                  </button>
                 </div>
-                <button onClick={() => completeVisit(v)}
-                  className="bg-green-600 text-white text-xs px-4 py-2 rounded-xl font-semibold flex items-center gap-1 hover:bg-green-700">
-                  <CheckCircle size={13} /> Done
-                </button>
-              </div>
 
-              {/* Notes area — AI mode: with dictate mic (auto-start) | Manual mode: plain textarea */}
-              <div className={`relative border-2 rounded-lg overflow-hidden shadow-sm transition-colors duration-300 ${
-                aiMode ? 'border-purple-300 bg-gradient-to-br from-indigo-50/50 to-purple-50/50 focus-within:border-purple-500' : 'border-gray-200 bg-gray-50/50 focus-within:border-blue-400'
-              }`}>
-                <textarea
-                  value={v.chief_complaint || ''}
-                  onChange={(e) => updateVisitNotes(v.id, e.target.value)}
-                  placeholder={aiMode ? '🎙️ Dictate freely — say "follow up in 7 days", medicines, symptoms...' : 'Type patient notes, symptoms, and observations...'}
-                  className="w-full text-sm text-gray-700 bg-transparent p-2.5 min-h-[80px] outline-none resize-none"
-                  style={{ paddingBottom: aiMode ? '44px' : '12px' }}
-                />
-                {aiMode && (
-                  <div className="absolute bottom-2 right-2 flex gap-2 items-center bg-white shadow-sm border border-purple-100 rounded-full pl-3 pr-1 py-1">
-                    <span className="text-[10px] text-purple-500 font-black tracking-widest uppercase">Dictate</span>
-                    <MicrophoneInput autoStart={true} onTranscript={(text) => appendVisitNotes(v.id, v.chief_complaint, text)} />
+                {/* Notes area — AI mode: with dictate mic (auto-start) | Manual mode: plain textarea */}
+                <div className={`relative border rounded-lg overflow-hidden shadow-sm transition-colors duration-300 ${
+                  aiMode ? 'border-purple-300 bg-gradient-to-br from-indigo-50/50 to-purple-50/50 focus-within:border-purple-500' : 'border-gray-200 bg-gray-50/50 focus-within:border-blue-400'
+                }`}>
+                  <textarea
+                    value={v.chief_complaint || ''}
+                    onChange={(e) => updateVisitNotes(v.id, e.target.value)}
+                    onFocus={() => { noteStartRef.current[v.id] = v.chief_complaint || '' }}
+                    onBlur={(e) => commitVisitNoteHistory(v, e.target.value)}
+                    placeholder={aiMode ? '🎙️ Dictate freely — say "follow up in 7 days", medicines, symptoms...' : 'Type patient notes, symptoms, and observations...'}
+                    className="w-full text-sm text-gray-700 bg-transparent p-2.5 min-h-[74px] outline-none resize-none"
+                    style={{ paddingBottom: aiMode ? '44px' : '10px' }}
+                  />
+                  {aiMode && (
+                    <div className="absolute bottom-2 right-2 flex gap-2 items-center bg-white shadow-sm border border-purple-100 rounded-full pl-3 pr-1 py-1">
+                      <span className="text-[10px] text-purple-500 font-black tracking-widest uppercase">Dictate</span>
+                      <MicrophoneInput autoStart={true} onTranscript={(text) => appendVisitNotes(v.id, v.chief_complaint, text)} />
+                    </div>
+                  )}
+                </div>
+
+                {/* Follow-up Panel — conditional on AI mode */}
+                {aiMode ? (
+                  <div className="rounded-lg border border-purple-200 bg-gradient-to-br from-indigo-50 to-purple-50 p-2.5 space-y-2 shadow-sm">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm">🤖</span>
+                      <span className="text-[11px] font-extrabold uppercase tracking-widest text-purple-700">AI Follow-up Detection</span>
+                      <span className="ml-auto text-[10px] bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-bold">AUTO</span>
+                    </div>
+
+                    {/* AI detected follow-up */}
+                    {followupDays ? (
+                      <div className="flex items-center gap-2 bg-green-50 border border-green-300 rounded-lg px-3 py-2">
+                        <span className="text-xs text-green-700 font-semibold">✅ Follow up in <strong>{followupDays} days</strong> — {format(addDays(new Date(), followupDays), 'dd MMM yyyy')}</span>
+                        <button
+                          onClick={() => {
+                            const fupISODate = format(addDays(new Date(), followupDays), 'yyyy-MM-dd');
+                            api.patch(`/opd-visits/${v.id}/`, {
+                              revisit_advice: `Follow up after ${followupDays} days`,
+                              follow_up_date: fupISODate,
+                            })
+                              .then(() => {
+                                setVisits(prev => prev.map(x => x.id === v.id ? { ...x, follow_up_date: fupISODate } : x));
+                                pushHistoryEvent({
+                                  visitId: v.id,
+                                  category: 'Appointment',
+                                  text: `Follow-up advised for ${format(addDays(new Date(), followupDays), 'dd MMM yyyy')}`,
+                                })
+                                toast.success(`✅ Follow-up saved!`);
+                              })
+                              .catch(() => {});
+                          }}
+                          className="ml-auto text-[10px] font-bold bg-green-600 text-white px-2.5 py-1 rounded-lg hover:bg-green-700 transition-all shrink-0">
+                          Use this
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-purple-400 italic">🎙️ Dictate something like "follow up in 7 days" to auto-detect...</p>
+                    )}
+
+                    {/* AI extracted medicines */}
+                    {meds.length > 0 && (
+                      <div className="pt-2 border-t border-purple-100">
+                        <p className="text-[10px] font-bold text-purple-600 uppercase tracking-wider mb-1.5">💊 AI Detected Medicines</p>
+                        <div className="flex flex-wrap gap-1">
+                          {meds.map((med, i) => (
+                            <span key={i} className="text-xs text-purple-900 bg-purple-100 rounded-full px-2.5 py-1 border border-purple-200 font-semibold">{med}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-gray-200 bg-white p-2.5 space-y-2 shadow-sm">
+                    <div className="flex items-center gap-1.5">
+                      <Clock size={13} className="text-gray-500" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-widest text-gray-600">Set Follow-up Date</span>
+                      <span className="ml-auto text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-bold">MANUAL</span>
+                    </div>
+                    <ManualFollowUp visitId={v.id} existingDate={v.follow_up_date} />
                   </div>
                 )}
               </div>
-
-              {/* Follow-up Panel — conditional on AI mode */}
-              {aiMode ? (
-                <div className="rounded-xl border-2 border-purple-200 bg-gradient-to-br from-indigo-50 to-purple-50 p-3 space-y-2 shadow-sm">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm">🤖</span>
-                    <span className="text-[11px] font-extrabold uppercase tracking-widest text-purple-700">AI Follow-up Detection</span>
-                    <span className="ml-auto text-[10px] bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-bold">AUTO</span>
-                  </div>
-
-                  {/* AI detected follow-up */}
-                  {followupDays ? (
-                    <div className="flex items-center gap-2 bg-green-50 border border-green-300 rounded-lg px-3 py-2">
-                      <span className="text-xs text-green-700 font-semibold">✅ Follow up in <strong>{followupDays} days</strong> — {format(addDays(new Date(), followupDays), 'dd MMM yyyy')}</span>
-                      <button
-                        onClick={() => {
-                          const fupISODate = format(addDays(new Date(), followupDays), 'yyyy-MM-dd');
-                          api.patch(`/opd-visits/${v.id}/`, {
-                            revisit_advice: `Follow up after ${followupDays} days`,
-                            follow_up_date: fupISODate,
-                          })
-                            .then(() => { setVisits(prev => prev.map(x => x.id === v.id ? { ...x, follow_up_date: fupISODate } : x)); toast.success(`✅ Follow-up saved!`); })
-                            .catch(() => {});
-                        }}
-                        className="ml-auto text-[10px] font-bold bg-green-600 text-white px-2.5 py-1 rounded-lg hover:bg-green-700 transition-all shrink-0">
-                        Use this
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-purple-400 italic">🎙️ Dictate something like "follow up in 7 days" to auto-detect...</p>
-                  )}
-
-                  {/* AI extracted medicines */}
-                  {meds.length > 0 && (
-                    <div className="pt-2 border-t border-purple-100">
-                      <p className="text-[10px] font-bold text-purple-600 uppercase tracking-wider mb-1.5">💊 AI Detected Medicines</p>
-                      <div className="flex flex-wrap gap-1">
-                        {meds.map((med, i) => (
-                          <span key={i} className="text-xs text-purple-900 bg-purple-100 rounded-full px-2.5 py-1 border border-purple-200 font-semibold">{med}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-2 shadow-sm">
-                  <div className="flex items-center gap-1.5">
-                    <Clock size={13} className="text-gray-500" />
-                    <span className="text-[11px] font-extrabold uppercase tracking-widest text-gray-600">Set Follow-up Date</span>
-                    <span className="ml-auto text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-bold">MANUAL</span>
-                  </div>
-                  <ManualFollowUp visitId={v.id} existingDate={v.follow_up_date} />
-                </div>
-              )}
+              <PatientHistoryTimeline
+                events={historyByVisit[v.id] || []}
+                filter={historyFilters[v.id] || 'all'}
+                onFilterChange={(nextFilter) =>
+                  setHistoryFilters((prev) => ({ ...prev, [v.id]: nextFilter }))
+                }
+              />
             </div>
           )})}
         </div>
@@ -790,34 +1145,197 @@ function OPDTab({ aiMode = false }) {
 }
 
 // ─── Treatment Plan Builder (Drag & Drop) ─────────────────────────────────
-function TPBuilder() {
+function TPBuilder({ preSelectedAdmission, patientChip, onBack }) {
   const [admissions, setAdmissions] = useState([])
-  const [selectedAdm, setSelectedAdm] = useState('')
+  const [selectedAdm, setSelectedAdm] = useState(preSelectedAdmission || '')
   const [planName, setPlanName] = useState('')
   const [startDate, setStartDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [days, setDays] = useState({ 0: [], 1: [], 2: [], 3: [] })
   const [activeDayIdx, setActiveDayIdx] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [currentPlanId, setCurrentPlanId] = useState(null)
   const [modal, setModal] = useState({ open: false, type: '', mode: 'add', payload: {} })
   const [paletteTab, setPaletteTab] = useState('templates') // 'templates' | 'packages'
   const [expandedPkg, setExpandedPkg] = useState(null)
   const [templates, setTemplates] = useState(MEDICINE_TEMPLATES)
   const [packages, setPackages] = useState(DEFAULT_PACKAGES)
+  const [staffList, setStaffList] = useState([])
+  const [staffDropdownOpen, setStaffDropdownOpen] = useState(false)
+  const [selectedStaffIds, setSelectedStaffIds] = useState([])
+  const [savingStaff, setSavingStaff] = useState(false)
   const [voiceCmdListening, setVoiceCmdListening] = useState(false)
   const [voiceLog, setVoiceLog] = useState(null)   // { text, matched: [{type,name}] } or null
+  const [tpHistoryEvents, setTpHistoryEvents] = useState([])
+  const [focusedServerItemId, setFocusedServerItemId] = useState(null)
+  const [inlineQuery, setInlineQuery] = useState('')
+  const [inlineActiveIdx, setInlineActiveIdx] = useState(-1)
+  const [inlineOpen, setInlineOpen] = useState(false)
   const voiceRecRef = useRef(null)
+  const voiceStopTimerRef = useRef(null)
+  const initialServerItemsRef = useRef([])
+  const inlineBlurTimerRef = useRef(null)
   const sensors = useSensors(useSensor(PointerSensor))
   let idCounter = useRef(0)
+  const STOP_WORDS = useMemo(
+    () => new Set(['give', 'check', 'start', 'add', 'from', 'with', 'after', 'hour', 'minute', 'day', 'days', 'hours', 'minutes', 'at', 'today', 'tomorrow']),
+    [],
+  )
+  const packageMatchers = useMemo(
+    () =>
+      packages.map((pkg) => ({
+        pkg,
+        keywords: pkg.name
+          .toLowerCase()
+          .split(/[\s&,/-]+/)
+          .filter((w) => w.length > 3 && !STOP_WORDS.has(w)),
+      })),
+    [packages, STOP_WORDS],
+  )
+  const templateMatchers = useMemo(
+    () =>
+      templates.map((tmpl) => ({
+        tmpl,
+        keywords: tmpl.title
+          .toLowerCase()
+          .split(/[\s&,()-]+/)
+          .filter((w) => w.length > 3 && !STOP_WORDS.has(w)),
+      })),
+    [templates, STOP_WORDS],
+  )
+  const inlineSuggestions = useMemo(() => {
+    const q = inlineQuery.trim().toLowerCase()
+    if (!q) return []
+    const templateHits = templates
+      .filter((t) => {
+        const title = (t.title || '').toLowerCase()
+        const instructions = (t.instructions || '').toLowerCase()
+        return title.includes(q) || instructions.includes(q)
+      })
+      .map((t, idx) => ({
+        id: `tmpl-${idx}-${t.title}`,
+        type: 'template',
+        label: t.title,
+        subtitle: t.instructions || 'Template',
+        payload: t,
+      }))
+
+    const packageHits = packages
+      .filter((p) => {
+        const name = (p.name || '').toLowerCase()
+        return name.includes(q)
+      })
+      .map((p) => ({
+        id: `pkg-${p.id}`,
+        type: 'package',
+        label: p.name,
+        subtitle: `${p.items?.length || 0} items package`,
+        payload: p,
+      }))
+
+    return [...templateHits, ...packageHits].slice(0, 8)
+  }, [inlineQuery, templates, packages])
+
+  async function loadTimelineEvents(admissionId) {
+    if (!admissionId) {
+      setTpHistoryEvents([])
+      return
+    }
+    try {
+      const { data } = await api.get(`/patient-timeline/?ipd_admission=${admissionId}&ordering=-timestamp`)
+      setTpHistoryEvents(data?.results || data || [])
+    } catch {
+      setTpHistoryEvents([])
+    }
+  }
 
   useEffect(() => {
     api.get('/ipd-admissions/?status=admitted').then(({ data }) => setAdmissions(data.results || data))
+    api.get('/staff/?limit=300').then(({ data }) => {
+      const list = data?.results || data?.data || data || []
+      setStaffList(Array.isArray(list) ? list : [])
+    }).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!selectedAdm) {
+      setTpHistoryEvents([])
+      return
+    }
+    loadTimelineEvents(selectedAdm)
+    const interval = setInterval(() => loadTimelineEvents(selectedAdm), 15000)
+    return () => clearInterval(interval)
+  }, [selectedAdm])
+
+  useEffect(() => {
+    if (inlineActiveIdx >= inlineSuggestions.length) {
+      setInlineActiveIdx(inlineSuggestions.length > 0 ? 0 : -1)
+    }
+  }, [inlineSuggestions, inlineActiveIdx])
+
+  async function loadPlanDetails(plan, admissionId) {
+    const [itemRes, doneRes, assRes] = await Promise.all([
+      api.get(`/treatment-plan-items/?plan=${plan.id}&limit=200`),
+      api.get(`/treatment-tasks/?ipd_admission=${admissionId}&limit=1200`),
+      api.get(`/treatment-plans/${plan.id}/staff-assignments/`),
+    ])
+    const items = itemRes.data?.results || itemRes.data?.data || itemRes.data || []
+    const allTasks = doneRes.data?.results || doneRes.data?.data || doneRes.data || []
+    const performedStatusMap = new Map()
+    ;(Array.isArray(allTasks) ? allTasks : []).forEach((t) => {
+      if (t.status === 'done' || t.status === 'skipped') {
+        performedStatusMap.set(String(t.plan_item), t.status)
+      }
+    })
+    const assignments = assRes.data?.results || assRes.data?.data || assRes.data || []
+    const selectedIds = (Array.isArray(assignments) ? assignments : []).map((a) => String(a.staff))
+    setSelectedStaffIds(selectedIds)
+    const grouped = { 0: [], 1: [], 2: [], 3: [] }
+    for (const item of (Array.isArray(items) ? items : [])) {
+      const d = item.day_offset ?? 0
+      if (d >= 0 && d <= 3) {
+        grouped[d].push({
+          _id: `item-${++idCounter.current}`,
+          _serverId: item.id,
+          title: item.title,
+          instructions: item.instructions || '',
+          category: item.category || 'medication',
+          time_of_day: item.time_of_day || '08:00',
+          _taskStatus: performedStatusMap.get(String(item.id)) || null,
+        })
+      }
+    }
+    initialServerItemsRef.current = Object.values(grouped).flat().map((x) => x._serverId).filter(Boolean)
+    setDays(grouped)
+  }
+
+  useEffect(() => {
+    if (!preSelectedAdmission) return
+    api.get(`/treatment-plans/?ipd_admission=${preSelectedAdmission}&limit=1`)
+      .then(({ data }) => {
+        const plans = data?.results || data?.data || data || []
+        const plan = Array.isArray(plans) && plans.length > 0 ? plans[0] : null
+        if (plan) {
+          setPlanName(plan.name || '')
+          setStartDate(plan.start_date || format(new Date(), 'yyyy-MM-dd'))
+          setCurrentPlanId(plan.id)
+          return loadPlanDetails(plan, preSelectedAdmission)
+        }
+      })
+      .catch(() => {})
+  }, [preSelectedAdmission])
 
   function mkId() { return `item-${++idCounter.current}` }
 
+  function clearInlineInput() {
+    setInlineQuery('')
+    setInlineActiveIdx(-1)
+    setInlineOpen(false)
+  }
+
   function addToDay(template, dayIdx) {
-    const times = (template.frequency && FREQ_MAP[template.frequency]) || [template.time_of_day || '08:00']
-    const newItems = times.map(t => ({ ...template, _id: mkId(), time_of_day: t }))
+    const nowTime = format(new Date(), 'HH:mm')
+    const times = (template.frequency && FREQ_MAP[template.frequency]) || [template.time_of_day || nowTime]
+    const newItems = times.map((t, idx) => ({ ...template, _id: mkId(), time_of_day: idx === 0 ? nowTime : t }))
     setDays(d => ({ ...d, [dayIdx]: [...d[dayIdx], ...newItems] }))
   }
 
@@ -830,171 +1348,248 @@ function TPBuilder() {
     toast.success(`"${pkg.name}" added to Day ${dayIdx + 1} (${newItems.length} orders)`)
   }
 
-  // ─── Voice command processor (with day + time extraction) ──────────────────
-  function processVoiceCommand(transcript) {
-    const lower = transcript.toLowerCase();
-    const matchedItems = [];
+  function addInlineCustomNote(rawText) {
+    const title = rawText.trim()
+    if (!title) return
+    addToDay({ title, instructions: '', category: 'medication', color: 'yellow', frequency: 'OD' }, activeDayIdx)
+  }
 
-    // ── 1. Detect target day from speech ─────────────────────────────────────
-    const dayWords = { one: 1, two: 2, three: 3, four: 4, '1': 1, '2': 2, '3': 3, '4': 4 };
-    const dayMatch = lower.match(/\bday\s+(\w+)\b/);
-    let targetDayIdx = activeDayIdx; // default = current active day
+  function applyInlineSelection(selection) {
+    if (!selection) return
+    if (selection.type === 'package') {
+      addPackageToDay(selection.payload, activeDayIdx)
+    } else {
+      addToDay(selection.payload, activeDayIdx)
+    }
+  }
+
+  function handleInlineKeyDown(event) {
+    if (!inlineOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      setInlineOpen(true)
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (!inlineSuggestions.length) return
+      setInlineActiveIdx((prev) => (prev + 1) % inlineSuggestions.length)
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!inlineSuggestions.length) return
+      setInlineActiveIdx((prev) => (prev <= 0 ? inlineSuggestions.length - 1 : prev - 1))
+      return
+    }
+    if (event.key === 'Escape') {
+      setInlineOpen(false)
+      setInlineActiveIdx(-1)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const query = inlineQuery.trim()
+      if (!query) return
+      if (inlineSuggestions.length > 0) {
+        const picked = inlineSuggestions[inlineActiveIdx >= 0 ? inlineActiveIdx : 0]
+        applyInlineSelection(picked)
+      } else {
+        addInlineCustomNote(query)
+      }
+      clearInlineInput()
+    }
+  }
+
+  // Voice command processor (day + time extraction).
+  function processVoiceCommand(transcript) {
+    const lower = transcript.toLowerCase()
+    const matchedItems = []
+    const wordSet = new Set(lower.split(/[^a-z0-9]+/).filter(Boolean))
+
+    const dayWords = { one: 1, two: 2, three: 3, four: 4, '1': 1, '2': 2, '3': 3, '4': 4 }
+    const dayMatch = lower.match(/\bday\s+(\w+)\b/)
+    let targetDayIdx = activeDayIdx
     if (dayMatch) {
-      const spoken = dayMatch[1];
-      const parsed = dayWords[spoken];
+      const spoken = dayMatch[1]
+      const parsed = dayWords[spoken]
       if (parsed && parsed >= 1 && parsed <= 4) {
-        targetDayIdx = parsed - 1;
-        setActiveDayIdx(targetDayIdx); // switch tab
+        targetDayIdx = parsed - 1
+        setActiveDayIdx(targetDayIdx)
       }
     }
 
-    // ── 2. Detect time from speech (robust extraction) ──────────────────────
     const timeKeywords = {
       morning: '08:00', afternoon: '13:00', evening: '18:00', night: '21:00',
       midnight: '00:00', noon: '12:00',
-    };
-    let overrideTime = null;
+    }
+    let overrideTime = null
 
-    // A. Relative offset (e.g., "after 2 hours", "in 30 minutes")
-    const relRegex = /(?:after|in)\s+(\d+)\s*(hour|minute)s?/i;
-    const relMatch = lower.match(relRegex);
+    const relRegex = /(?:after|in)\s+(\d+)\s*(hour|minute)s?/i
+    const relMatch = lower.match(relRegex)
     if (relMatch) {
-      const amount = parseInt(relMatch[1], 10);
-      const unit = relMatch[2].toLowerCase();
-      const now = new Date();
-      const future = new Date(now.getTime() + (unit.startsWith('hour') ? amount * 3600000 : amount * 60000));
-      overrideTime = `${String(future.getHours()).padStart(2, '0')}:${String(future.getMinutes()).padStart(2, '0')}`;
+      const amount = parseInt(relMatch[1], 10)
+      const unit = relMatch[2].toLowerCase()
+      const now = new Date()
+      const future = new Date(now.getTime() + (unit.startsWith('hour') ? amount * 3600000 : amount * 60000))
+      overrideTime = `${String(future.getHours()).padStart(2, '0')}:${String(future.getMinutes()).padStart(2, '0')}`
     }
 
-    // B. Explicit numerical time (if no relative offset found)
     if (!overrideTime) {
-      const timeRegex = /(?:\bat\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?\s*m?\.?\b|o'clock)?/i;
-      const timeMatch = lower.match(timeRegex);
-
+      const timeRegex = /(?:\bat\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?\s*m?\.?\b|o'clock)?/i
+      const timeMatch = lower.match(timeRegex)
       if (timeMatch) {
-        const hStr = timeMatch[1];
-        const mStr = timeMatch[2];
-        const meridiemRaw = timeMatch[3] ? timeMatch[3].toLowerCase().replace(/[\.\s]/g, '') : null;
-        
-        let h = parseInt(hStr, 10);
-        const m = mStr ? parseInt(mStr, 10) : 0;
+        const hStr = timeMatch[1]
+        const mStr = timeMatch[2]
+        const meridiemRaw = timeMatch[3] ? timeMatch[3].toLowerCase().replace(/[\.\s]/g, '') : null
 
-        const hasColon = !!mStr;
-        const hasMeridiem = meridiemRaw && (meridiemRaw.startsWith('a') || meridiemRaw.startsWith('p'));
-        const hasOClock = meridiemRaw === "o'clock";
-        const hasAtContext = lower.includes(`at ${hStr}`);
+        let h = parseInt(hStr, 10)
+        const m = mStr ? parseInt(mStr, 10) : 0
+
+        const hasColon = !!mStr
+        const hasMeridiem = meridiemRaw && (meridiemRaw.startsWith('a') || meridiemRaw.startsWith('p'))
+        const hasOClock = meridiemRaw === "o'clock"
+        const hasAtContext = lower.includes(`at ${hStr}`)
 
         if (hasColon || hasMeridiem || hasOClock || hasAtContext) {
           if (hasMeridiem) {
-            const isPM = meridiemRaw.startsWith('p');
-            if (isPM && h < 12) h += 12;
-            if (!isPM && h === 12) h = 0;
+            const isPM = meridiemRaw.startsWith('p')
+            if (isPM && h < 12) h += 12
+            if (!isPM && h === 12) h = 0
           }
           if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-            overrideTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            overrideTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
           }
         }
       }
     }
 
-    // C. Keyword time fallback
     if (!overrideTime) {
       for (const [kw, t] of Object.entries(timeKeywords)) {
-        if (lower.includes(kw)) { overrideTime = t; break; }
+        if (lower.includes(kw)) { overrideTime = t; break }
       }
     }
 
-    // helper to inject overrideTime into addToDay
     const addToDayWithTime = (tmpl) => {
-      if (!overrideTime) { addToDay(tmpl, targetDayIdx); return; }
-      const newItem = { ...tmpl, _id: mkId(), time_of_day: overrideTime };
-      setDays(d => ({ ...d, [targetDayIdx]: [...d[targetDayIdx], newItem] }));
-    };
+      if (!overrideTime) {
+        addToDay(tmpl, targetDayIdx)
+        return
+      }
+      const newItem = { ...tmpl, _id: mkId(), time_of_day: overrideTime }
+      setDays(d => ({ ...d, [targetDayIdx]: [...d[targetDayIdx], newItem] }))
+    }
 
-    // ── 3. Match packages ───────────────────────────────────────────────────
-    const STOP_WORDS = new Set(['give', 'check', 'start', 'add', 'from', 'with', 'after', 'hour', 'minute', 'day', 'days', 'hours', 'minutes', 'at', 'today', 'tomorrow']);
-    
-    packages.forEach(pkg => {
-      // Split pkg name into words, filter out short words and common stop-words
-      const keywords = pkg.name.toLowerCase().split(/[\s&,/-]+/).filter(w => w.length > 3 && !STOP_WORDS.has(w));
-      
-      // Strict matching: check if any of the UNIQUE clinical keywords are present as full words
-      const isMatch = keywords.some(kw => {
-        const regex = new RegExp(`\\b${kw}\\b`, 'i');
-        return regex.test(lower);
-      });
+    packageMatchers.forEach(({ pkg, keywords }) => {
+      const isMatch = keywords.some((kw) => wordSet.has(kw))
 
       if (isMatch) {
         if (overrideTime) {
-          const newItems = pkg.items.flatMap(t => [{ ...t, _id: mkId(), time_of_day: overrideTime }]);
-          setDays(d => ({ ...d, [targetDayIdx]: [...d[targetDayIdx], ...newItems] }));
-          toast.success(`"${pkg.name}" → Day ${targetDayIdx + 1} @ ${overrideTime}`);
+          const newItems = pkg.items.flatMap(t => [{ ...t, _id: mkId(), time_of_day: overrideTime }])
+          setDays(d => ({ ...d, [targetDayIdx]: [...d[targetDayIdx], ...newItems] }))
+          toast.success(`"${pkg.name}" -> Day ${targetDayIdx + 1} @ ${overrideTime}`)
         } else {
-          addPackageToDay(pkg, targetDayIdx);
+          addPackageToDay(pkg, targetDayIdx)
         }
-        matchedItems.push({ type: 'package', name: pkg.name, day: targetDayIdx + 1, time: overrideTime });
+        matchedItems.push({ type: 'package', name: pkg.name, day: targetDayIdx + 1, time: overrideTime })
       }
-    });
+    })
 
-    // ── 4. Match templates ──────────────────────────────────────────────────
-    templates.forEach(tmpl => {
-      // Clean the title for matching (exclude common prefixes like "Give", "Check")
-      const keywords = tmpl.title.toLowerCase().split(/[\s&,()-]+/).filter(w => w.length > 3 && !STOP_WORDS.has(w));
-      
-      const isMatch = keywords.some(kw => {
-        const regex = new RegExp(`\\b${kw}\\b`, 'i');
-        return regex.test(lower);
-      });
+    templateMatchers.forEach(({ tmpl, keywords }) => {
+      const isMatch = keywords.some((kw) => wordSet.has(kw))
 
       if (isMatch) {
-        addToDayWithTime(tmpl);
-        matchedItems.push({ type: 'template', name: tmpl.title, day: targetDayIdx + 1, time: overrideTime });
+        addToDayWithTime(tmpl)
+        matchedItems.push({ type: 'template', name: tmpl.title, day: targetDayIdx + 1, time: overrideTime })
       }
-    });
+    })
 
     if (matchedItems.length > 0) {
-      setVoiceLog({ text: transcript, matched: matchedItems, day: targetDayIdx + 1, time: overrideTime });
-      setTimeout(() => setVoiceLog(null), 6000);
+      setVoiceLog({ text: transcript, matched: matchedItems, day: targetDayIdx + 1, time: overrideTime })
+      setTimeout(() => setVoiceLog(null), 6000)
     } else {
-      toast(`No match for: "${transcript.slice(0, 40)}"`, { icon: '🎙️' });
+      toast(`No match for: "${transcript.slice(0, 40)}"`, { icon: '🎙️' })
     }
   }
 
   function toggleVoiceCmd() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) { toast.error('Speech not supported'); return; }
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) { toast.error('Speech not supported'); return }
 
     if (voiceCmdListening) {
-      voiceRecRef.current?.stop();
-      setVoiceCmdListening(false);
-      return;
+      voiceRecRef.current?.stop()
+      if (voiceStopTimerRef.current) {
+        clearTimeout(voiceStopTimerRef.current)
+        voiceStopTimerRef.current = null
+      }
+      setVoiceCmdListening(false)
+      return
     }
 
-    const rec = new SpeechRecognition();
-    rec.continuous = false;
-    rec.interimResults = false;
-    rec.lang = 'en-US';
-    voiceRecRef.current = rec;
+    const rec = new SpeechRecognition()
+    rec.continuous = true
+    rec.interimResults = true
+    rec.lang = 'en-US'
+    rec.maxAlternatives = 1
+    voiceRecRef.current = rec
+    let handled = false
+    let lastTranscript = ''
+    let silenceTimer = null
+
+    const finishFast = (transcript) => {
+      if (handled) return
+      const clean = (transcript || '').trim()
+      if (clean.length < 2) return
+      handled = true
+      processVoiceCommand(clean)
+      rec.stop()
+    }
 
     rec.onresult = e => {
-      const transcript = e.results[0][0].transcript;
-      processVoiceCommand(transcript);
-    };
-    rec.onerror = () => setVoiceCmdListening(false);
-    rec.onend = () => setVoiceCmdListening(false);
+      for (let i = e.resultIndex; i < e.results.length; i += 1) {
+        const result = e.results[i]
+        const transcript = result[0]?.transcript?.trim()
+        if (!transcript) continue
+        lastTranscript = transcript
+        if (result.isFinal && !handled) {
+          finishFast(transcript)
+          return
+        }
+      }
+      if (!handled) {
+        if (silenceTimer) clearTimeout(silenceTimer)
+        // Trigger quickly once speech pauses briefly.
+        silenceTimer = setTimeout(() => finishFast(lastTranscript), 550)
+      }
+    }
+    rec.onerror = () => setVoiceCmdListening(false)
+    rec.onend = () => {
+      if (silenceTimer) {
+        clearTimeout(silenceTimer)
+        silenceTimer = null
+      }
+      if (!handled && lastTranscript.length >= 3) {
+        processVoiceCommand(lastTranscript)
+      }
+      if (voiceStopTimerRef.current) {
+        clearTimeout(voiceStopTimerRef.current)
+        voiceStopTimerRef.current = null
+      }
+      setVoiceCmdListening(false)
+    }
 
-    rec.start();
-    setVoiceCmdListening(true);
+    rec.start()
+    setVoiceCmdListening(true)
+    voiceStopTimerRef.current = setTimeout(() => {
+      rec.stop()
+    }, 2500)
   }
 
   function removeFromDay(dayIdx, itemId) {
-    setDays(d => ({ ...d, [dayIdx]: d[dayIdx].filter(i => i._id !== itemId) }))
+    setDays(d => ({ ...d, [dayIdx]: d[dayIdx].filter(i => (i._id !== itemId) || i._taskStatus) }))
   }
 
   function updateItem(dayIdx, itemId, field, val) {
     setDays(d => ({
       ...d,
-      [dayIdx]: d[dayIdx].map(i => i._id === itemId ? { ...i, [field]: val } : i)
+      [dayIdx]: d[dayIdx].map(i => (i._id === itemId && !i._taskStatus) ? { ...i, [field]: val } : i),
     }))
   }
 
@@ -1106,6 +1701,47 @@ function TPBuilder() {
     setModal({ open: false, type: '', mode: 'add', payload: {} });
   }
 
+  async function saveStaffAssignments() {
+    if (!currentPlanId) {
+      // Auto-save plan first, then assign
+      const totalItems = Object.values(days).flat().length
+      if (totalItems === 0) {
+        toast.error('Add at least one order item before assigning staff')
+        return
+      }
+      await createPlan()
+      // createPlan sets currentPlanId via setCurrentPlanId but state isn't
+      // synchronous; we re-open dropdown after plan save instead.
+      toast('Plan saved — please click Assign staff again to select staff')
+      return
+    }
+    setSavingStaff(true)
+    try {
+      const res = await api.get(`/treatment-plans/${currentPlanId}/staff-assignments/`)
+      const current = res.data?.results || res.data?.data || res.data || []
+      const currentMap = new Map((Array.isArray(current) ? current : []).map((a) => [String(a.staff), a]))
+      const wanted = new Set(selectedStaffIds.map(String))
+      const toDelete = (Array.isArray(current) ? current : []).filter((a) => !wanted.has(String(a.staff)))
+      const toAdd = selectedStaffIds.filter((sid) => !currentMap.has(String(sid)))
+
+      await Promise.all(toDelete.map((a) => api.delete(`/treatment-plans/${currentPlanId}/staff-assignments/${a.id}/`)))
+      await Promise.all(
+        toAdd.map((staffId) =>
+          api.post(`/treatment-plans/${currentPlanId}/staff-assignments/`, {
+            staff: staffId,
+            plan: currentPlanId,
+          }),
+        ),
+      )
+      toast.success('Staff assignment updated')
+      setStaffDropdownOpen(false)
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Failed to update staff assignment')
+    } finally {
+      setSavingStaff(false)
+    }
+  }
+
   async function createPlan() {
     if (!selectedAdm) return toast.error('Select a patient')
     const totalItems = Object.values(days).flat().length
@@ -1113,81 +1749,195 @@ function TPBuilder() {
     setLoading(true)
     try {
       const endDate = format(addDays(new Date(startDate), 3), 'yyyy-MM-dd')
-      const resPlan = await api.post('/treatment-plans/', {
-        ipd_admission: selectedAdm,
-        name: planName || 'Treatment Plan',
-        start_date: startDate,
-        end_date: endDate,
-      })
-      const pl = resPlan.data?.data || resPlan.data  // support success_response and plain DRF
-      let seq = 0
-      for (const [dayOffset, items] of Object.entries(days)) {
-        for (const item of items) {
-          seq++
-          await api.post('/treatment-plan-items/', {
-            plan: pl.id,
-            sequence: seq,
-            title: item.title,
-            instructions: item.instructions || '',
-            category: item.category,
-            day_offset: parseInt(dayOffset),
-            time_of_day: item.time_of_day || '08:00',
-            is_active: true,
-          })
+      let planId = currentPlanId
+
+      if (planId) {
+        await api.patch(`/treatment-plans/${planId}/`, {
+          name: planName || 'Treatment Plan',
+          start_date: startDate,
+          end_date: endDate,
+        })
+      } else {
+        const adm = admissions.find(a => String(a.id) === String(selectedAdm))
+        const autoName = adm ? `Plan – ${adm.patient_name || 'Patient'}` : (planName || 'Treatment Plan')
+        const resPlan = await api.post('/treatment-plans/', {
+          ipd_admission: selectedAdm,
+          name: autoName,
+          start_date: startDate,
+          end_date: endDate,
+        })
+        const pl = resPlan.data?.data || resPlan.data
+        planId = pl.id
+        setCurrentPlanId(planId)
+      }
+
+      const nextFlatItems = Object.entries(days).flatMap(([dayOffset, items]) =>
+        items.map((item) => ({ ...item, _dayOffset: parseInt(dayOffset, 10) })),
+      )
+      const lockedItemIds = new Set(nextFlatItems.filter((x) => x._taskStatus && x._serverId).map((x) => String(x._serverId)))
+      const nextItemById = new Map(nextFlatItems.filter((x) => x._serverId).map((x) => [String(x._serverId), x]))
+      for (const doneId of lockedItemIds) {
+        const existing = nextItemById.get(doneId)
+        if (!existing) {
+          toast.error('Cannot delete a performed task item')
+          setLoading(false)
+          return
         }
       }
-      toast.success(`Plan created with ${totalItems} orders!`)
-      setDays({ 0: [], 1: [], 2: [], 3: [] })
-      setPlanName('')
-    } catch (e) { toast.error(e.response?.data?.detail || 'Error') }
+
+      const removedIds = initialServerItemsRef.current.filter((id) => !nextItemById.has(String(id)))
+      if (removedIds.some((id) => lockedItemIds.has(String(id)))) {
+        toast.error('Cannot remove performed task item')
+        setLoading(false)
+        return
+      }
+
+      let seq = 0
+      for (const item of nextFlatItems) {
+        seq++
+        const payload = {
+          plan: planId,
+          sequence: seq,
+          title: item.title,
+          instructions: item.instructions || '',
+          category: item.category,
+          day_offset: item._dayOffset,
+          time_of_day: item.time_of_day || '08:00',
+          is_active: true,
+        }
+        if (item._serverId) {
+          if (item._taskStatus) continue
+          await api.patch(`/treatment-plan-items/${item._serverId}/`, payload)
+        } else {
+          await api.post('/treatment-plan-items/', payload)
+        }
+      }
+
+      for (const removedId of removedIds) {
+        await api.delete(`/treatment-plan-items/${removedId}/`)
+      }
+
+      await loadPlanDetails({ id: planId }, selectedAdm)
+      const isNew = !currentPlanId
+      await loadTimelineEvents(selectedAdm)
+      toast.success(isNew ? `Plan created — now assign staff` : `Plan updated (${totalItems} orders)`)
+      if (!isNew && selectedStaffIds.length === 0) {
+        toast('No staff assigned yet — use Assign staff button', { icon: '⚠️' })
+      }
+    } catch (e) { toast.error(e.response?.data?.detail || 'Error saving plan') }
     finally { setLoading(false) }
+  }
+
+  function handleTimelineSelect(event) {
+    const targetItemId = event?.treatment_item
+    if (!targetItemId) return
+    const dayMatch = Object.entries(days).find(([, items]) =>
+      items.some((item) => String(item._serverId) === String(targetItemId)),
+    )
+    if (!dayMatch) return
+    const nextDayIdx = Number(dayMatch[0])
+    setActiveDayIdx(nextDayIdx)
+    setFocusedServerItemId(String(targetItemId))
+    setTimeout(() => setFocusedServerItemId(null), 1800)
   }
 
   const totalItems = Object.values(days).flat().length
 
   return (
-    <div className="space-y-4">
-      {/* Patient & plan meta */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="grid grid-cols-3 gap-3">
-          <div className="col-span-3 sm:col-span-1">
-            <label className="text-xs text-gray-500 mb-1 block">Patient (IPD)</label>
+    <div className="space-y-2 h-full flex flex-col overflow-hidden">
+      <div className="bg-white rounded-lg px-2.5 py-1.5 border border-gray-200 shrink-0 flex flex-wrap items-center gap-2">
+        {patientChip || (
+          <div className="shrink-0">
             <select value={selectedAdm} onChange={e => setSelectedAdm(e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-              <option value="">-- Select patient --</option>
+              className="border border-gray-200 rounded px-2 py-1 text-[11px] outline-none focus:border-blue-500 min-w-[140px]">
+              <option value="">-- Patient --</option>
               {admissions.map(a => <option key={a.id} value={a.id}>{a.patient_name || a.id}</option>)}
             </select>
           </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Plan Name</label>
-            <input value={planName} onChange={e => setPlanName(e.target.value)} placeholder="e.g. Post-op care"
-              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Start Date</label>
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-          </div>
+        )}
+        <div className="flex items-center gap-1.5 flex-1 min-w-0">
+          <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+            className="border border-gray-200 rounded px-2 py-1 text-[11px] outline-none focus:border-blue-500 w-[130px] shrink-0" />
+          {currentPlanId && <span className="text-[9px] text-slate-500 font-mono">Editing plan</span>}
         </div>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setStaffDropdownOpen((s) => !s)}
+            className="inline-flex items-center gap-1.5 border border-gray-200 rounded px-2 py-1 text-[11px] hover:bg-gray-50"
+            title="Assign multiple staff"
+          >
+            <UserPlus size={12} />
+            {selectedStaffIds.length > 0 ? `${selectedStaffIds.length} staff selected` : 'Assign staff'}
+          </button>
+          {staffDropdownOpen && (
+            <div className="absolute right-0 mt-1 w-64 max-h-56 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg z-20 p-2 space-y-1">
+              {staffList.map((s) => {
+                const sid = String(s.id)
+                const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || s.employee_code || sid
+                const selected = selectedStaffIds.includes(sid)
+                return (
+                  <label key={sid} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 text-[11px]">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(e) => {
+                        setSelectedStaffIds((prev) =>
+                          e.target.checked ? [...new Set([...prev, sid])] : prev.filter((x) => x !== sid),
+                        )
+                      }}
+                    />
+                    <span className="flex-1 truncate">{name}</span>
+                  </label>
+                )
+              })}
+              {staffList.length === 0 && <p className="text-[11px] text-slate-500 px-2 py-1">No staff found</p>}
+              <div className="pt-1 border-t border-gray-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={saveStaffAssignments}
+                  disabled={savingStaff || !currentPlanId}
+                  className="text-[11px] px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingStaff ? 'Saving...' : 'Save Staff'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        <button
+          onClick={createPlan}
+          disabled={loading || totalItems === 0}
+          className="shrink-0 bg-blue-600 text-white px-3 py-1.5 rounded font-bold text-[11px] flex items-center justify-center gap-1.5 hover:bg-blue-700 disabled:opacity-50 transition-all"
+        >
+          <ClipboardList size={13} />
+          {loading ? 'Saving...' : currentPlanId ? `Save (${totalItems})` : `Create (${totalItems})`}
+        </button>
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="shrink-0 border border-gray-200 text-gray-600 px-3 py-1.5 rounded text-[11px] hover:bg-gray-50 transition-all"
+          >
+            ← Back
+          </button>
+        )}
       </div>
 
-      <div className="grid grid-cols-5 gap-4 items-start">
-        {/* Palette: Templates | Packages */}
-        <div className="col-span-5 lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden h-[calc(100vh-210px)]">
-          {/* Tab switcher + Voice CMD mic */}
-          <div className="flex items-center gap-1.5 p-2 bg-gray-50 border-b border-gray-100">
+      <div className="grid grid-cols-12 gap-2 flex-1 min-h-0 overflow-hidden">
+        <div data-no-copy="true" className="doctor-no-copy col-span-12 lg:col-span-4 bg-white rounded-lg border border-gray-200 flex flex-col overflow-hidden">
+          <div className="flex items-center gap-1 p-1.5 bg-gray-50 border-b border-gray-100">
             <button onClick={() => setPaletteTab('templates')}
-              className={`flex-1 flex gap-2 items-center justify-center text-[11px] uppercase tracking-wider font-extrabold py-2 px-3 rounded-xl transition-all ${paletteTab === 'templates' ? 'bg-white text-blue-700 shadow border border-gray-200 ring-1 ring-blue-500/10' : 'text-gray-400 hover:bg-gray-100/50'}`}>
-              🧪 Templates <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${paletteTab === 'templates' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-500'}`}>{templates.length}</span>
+              className={`flex-1 flex gap-1 items-center justify-center text-[10px] uppercase tracking-wide font-bold py-1.5 px-2 rounded-md transition-all ${paletteTab === 'templates' ? 'bg-white text-blue-700 shadow-sm border border-gray-200' : 'text-gray-400 hover:bg-gray-100/50'}`}>
+              🧪 Templates <span className={`text-[9px] px-1 py-0.5 rounded ${paletteTab === 'templates' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-500'}`}>{templates.length}</span>
             </button>
             <button onClick={() => setPaletteTab('packages')}
-              className={`flex-1 flex gap-2 items-center justify-center text-[11px] uppercase tracking-wider font-extrabold py-2 px-3 rounded-xl transition-all ${paletteTab === 'packages' ? 'bg-white text-blue-700 shadow border border-gray-200 ring-1 ring-blue-500/10' : 'text-gray-400 hover:bg-gray-100/50'}`}>
-              📦 Packages <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${paletteTab === 'packages' ? 'bg-purple-100 text-purple-700' : 'bg-gray-200 text-gray-500'}`}>{packages.length}</span>
+              className={`flex-1 flex gap-1 items-center justify-center text-[10px] uppercase tracking-wide font-bold py-1.5 px-2 rounded-md transition-all ${paletteTab === 'packages' ? 'bg-white text-blue-700 shadow-sm border border-gray-200' : 'text-gray-400 hover:bg-gray-100/50'}`}>
+              📦 Packages <span className={`text-[9px] px-1 py-0.5 rounded ${paletteTab === 'packages' ? 'bg-purple-100 text-purple-700' : 'bg-gray-200 text-gray-500'}`}>{packages.length}</span>
             </button>
-            {/* AI Voice Command Button */}
             <button
               onClick={toggleVoiceCmd}
-              title={voiceCmdListening ? 'Stop voice command' : 'Say a package or template name to add to Day ' + (activeDayIdx + 1)}
+              title={voiceCmdListening ? 'Stop voice command' : `Say a package or template name to add to Day ${activeDayIdx + 1}`}
               className={`relative flex items-center justify-center w-9 h-9 rounded-xl shrink-0 transition-all ${
                 voiceCmdListening
                   ? 'bg-gradient-to-br from-indigo-500 to-purple-600 shadow-lg shadow-purple-500/40'
@@ -1205,30 +1955,27 @@ function TPBuilder() {
             </button>
           </div>
 
-          {/* Voice command feedback banner */}
           {voiceLog && (
             <div className="mx-2 mt-2 bg-gradient-to-r from-indigo-50 to-purple-50 border border-purple-200 rounded-xl px-3 py-2.5 flex flex-col gap-1.5 shadow-sm">
               <p className="text-[10px] text-purple-500 uppercase font-extrabold tracking-wider flex items-center gap-1">
                 <Mic size={10} /> Heard: <span className="text-purple-700 font-bold normal-case tracking-normal">"{voiceLog.text.slice(0, 50)}"</span>
               </p>
-              {/* Day + Time detected */}
               <div className="flex gap-2">
                 <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
-                  📅 Day {voiceLog.day}
+                  Day {voiceLog.day}
                 </span>
                 {voiceLog.time && (
                   <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200">
-                    ⏰ {voiceLog.time}
+                    {voiceLog.time}
                   </span>
                 )}
               </div>
-              {/* Matched items */}
               <div className="flex flex-wrap gap-1">
                 {voiceLog.matched.map((m, i) => (
                   <span key={i} className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                     m.type === 'package' ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-blue-100 text-blue-700 border border-blue-200'
                   }`}>
-                    {m.type === 'package' ? '📦' : '🧪'} {m.name}
+                    {m.type === 'package' ? 'Package' : 'Template'} {m.name}
                   </span>
                 ))}
               </div>
@@ -1242,26 +1989,26 @@ function TPBuilder() {
                 <p className="text-xs font-medium text-gray-400">Add directly to days →</p>
                 <button onClick={addTemplate} className="text-xs bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg font-bold hover:bg-blue-200 transition-all shadow-sm">+ New Note</button>
               </div>
-              <div className="grid grid-cols-2 gap-3 pb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 pb-3">
                 {templates.map((t, i) => ({ ...t, _originalIndex: i }))
                  .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
                  .map((t) => {
                   const i = t._originalIndex;
                   const c = pkgColors[t.color || 'yellow'] || pkgColors.yellow;
                   return (
-                  <div key={i} onClick={() => addToDay(t, activeDayIdx)} className={`rounded-lg shadow-sm border p-2.5 flex flex-col justify-start ${c.bg} ${c.border} relative group transform transition-all duration-200 cursor-pointer hover:shadow hover:-translate-y-0.5`}>
-                    {t.isPinned && <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-lg drop-shadow-md z-10 transition-transform group-hover:scale-110">📌</div>}
-                    <div>
-                      <div className="flex justify-between items-start mb-1.5">
-                        <span className="text-base bg-white/60 w-7 h-7 flex items-center justify-center rounded-md shadow-sm" title={t.category}>{t.icon || categoryEmoji[t.category]}</span>
+                  <div key={i} onClick={() => addToDay(t, activeDayIdx)} className={`rounded-md border p-1.5 flex flex-col justify-start min-h-[92px] ${c.bg}/70 ${c.border} relative group transition-all duration-150 cursor-pointer hover:shadow-sm hover:-translate-y-0.5`}>
+                    {t.isPinned && <div className="absolute -top-2 left-1/2 -translate-x-1/2 text-sm drop-shadow-sm z-10 transition-transform group-hover:scale-110">📌</div>}
+                    <div className="min-w-0">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="text-xs bg-white/55 w-5 h-5 flex items-center justify-center rounded-md border border-white/40" title={t.category}>{t.icon || categoryEmoji[t.category]}</span>
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={(e) => { e.stopPropagation(); togglePin(i) }} className="p-1 rounded-md bg-white/80 hover:bg-white border border-transparent hover:border-gray-300 text-gray-700 transition-all shadow-sm" title={t.isPinned ? "Unpin" : "Pin to Top"}>{t.isPinned ? '📍' : '📌'}</button>
-                          <button onClick={(e) => { e.stopPropagation(); editTemplate(i) }} className={`p-1 rounded-md bg-white/80 hover:bg-white border border-transparent hover:border-gray-200 text-gray-700 transition-all shadow-sm ${c.text}`}>✏️</button>
-                          <button onClick={(e) => { e.stopPropagation(); deleteTemplate(i) }} className="p-1 rounded-md bg-white/80 hover:bg-white border border-transparent hover:border-red-200 text-red-600 transition-all shadow-sm">❌</button>
+                          <button onClick={(e) => { e.stopPropagation(); togglePin(i) }} className="p-0.5 rounded bg-white/80 hover:bg-white border border-transparent hover:border-gray-300 text-[10px] leading-none text-gray-700 transition-all" title={t.isPinned ? "Unpin" : "Pin to Top"}>{t.isPinned ? '📍' : '📌'}</button>
+                          <button onClick={(e) => { e.stopPropagation(); editTemplate(i) }} className={`p-0.5 rounded bg-white/80 hover:bg-white border border-transparent hover:border-gray-200 text-[10px] leading-none text-gray-700 transition-all ${c.text}`}>✏️</button>
+                          <button onClick={(e) => { e.stopPropagation(); deleteTemplate(i) }} className="p-0.5 rounded bg-white/80 hover:bg-white border border-transparent hover:border-red-200 text-[10px] leading-none text-red-600 transition-all">❌</button>
                         </div>
                       </div>
-                      <p className={`font-bold text-xs leading-tight mb-1 line-clamp-2 ${c.text}`}>{t.title}</p>
-                      {t.instructions && <p className={`text-[10px] leading-tight line-clamp-2 ${c.text} opacity-80 mt-1`}>{t.instructions}</p>}
+                      <p className={`font-semibold text-[11px] leading-[1.1rem] mb-0.5 line-clamp-2 break-words ${c.text}`}>{t.title}</p>
+                      {t.instructions && <p className={`text-[9px] leading-[0.85rem] line-clamp-2 break-words ${c.text} opacity-70`}>{t.instructions}</p>}
                     </div>
                   </div>
                 )})}
@@ -1328,33 +2075,85 @@ function TPBuilder() {
           )}
         </div>
 
-        {/* Day columns */}
-        <div className="col-span-5 lg:col-span-3 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden h-[calc(100vh-210px)]">
-          {/* Day Tabs */}
-          <div className="flex border-b border-gray-100 bg-gray-50/50 p-2 gap-2">
+        <div data-no-copy="true" className="doctor-no-copy col-span-12 lg:col-span-5 bg-white rounded-lg border border-gray-200 flex flex-col overflow-hidden">
+          <div className="flex border-b border-gray-100 bg-gray-50/50 p-1.5 gap-1.5">
              {[0, 1, 2, 3].map(dayIdx => (
                 <button
                    key={dayIdx}
                    onClick={() => setActiveDayIdx(dayIdx)}
-                   className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-between transition-all ${activeDayIdx === dayIdx ? 'bg-white shadow-md border border-gray-100 ring-1 ring-blue-500/10 scale-[1.02]' : 'hover:bg-gray-100/50 text-gray-500'}`}
+                   className={`flex-1 py-1.5 px-2 rounded-md flex items-center justify-between transition-all ${activeDayIdx === dayIdx ? 'bg-white shadow-sm border border-gray-200' : 'hover:bg-gray-100/50 text-gray-500'}`}
                 >
                    <div className="text-left">
-                     <p className={`text-sm font-extrabold ${activeDayIdx === dayIdx ? 'text-blue-700' : ''}`}>Day {dayIdx + 1}</p>
-                     <p className={`text-xs ${activeDayIdx === dayIdx ? 'text-blue-400 font-medium' : 'text-gray-400'}`}>{format(addDays(new Date(startDate), dayIdx), 'dd MMM')}</p>
+                     <p className={`text-[11px] font-bold ${activeDayIdx === dayIdx ? 'text-blue-700' : ''}`}>Day {dayIdx + 1}</p>
+                     <p className={`text-[9px] ${activeDayIdx === dayIdx ? 'text-blue-400' : 'text-gray-400'}`}>{format(addDays(new Date(startDate), dayIdx), 'dd MMM')}</p>
                    </div>
-                   <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${activeDayIdx === dayIdx ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-600'}`}>{days[dayIdx].length} items</span>
+                   <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${activeDayIdx === dayIdx ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-600'}`}>{days[dayIdx].length} items</span>
                 </button>
              ))}
           </div>
-
-          {/* Active Day Content */}
-          <div className="p-4 flex-1 bg-gray-50/30 overflow-y-auto custom-scrollbar">
+          <div className="p-2 flex-1 bg-gray-50/30 overflow-y-auto custom-scrollbar">
+            <div className="relative mb-2">
+              <input
+                value={inlineQuery}
+                onChange={(e) => {
+                  setInlineQuery(e.target.value)
+                  setInlineOpen(true)
+                  setInlineActiveIdx(0)
+                }}
+                onFocus={() => {
+                  if (inlineBlurTimerRef.current) clearTimeout(inlineBlurTimerRef.current)
+                  setInlineOpen(true)
+                }}
+                onBlur={() => {
+                  inlineBlurTimerRef.current = setTimeout(() => setInlineOpen(false), 120)
+                }}
+                onKeyDown={handleInlineKeyDown}
+                placeholder={`Type order for Day ${activeDayIdx + 1}...`}
+                className="w-full h-8 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 outline-none focus:border-blue-400"
+              />
+              {inlineOpen && inlineQuery.trim().length > 0 && (
+                <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                  {inlineSuggestions.length > 0 ? (
+                    inlineSuggestions.map((item, idx) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onMouseDown={() => {
+                          applyInlineSelection(item)
+                          clearInlineInput()
+                        }}
+                        className={`w-full text-left px-2.5 py-1.5 border-b last:border-b-0 border-gray-100 ${
+                          inlineActiveIdx === idx ? 'bg-blue-50' : 'bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className="text-[11px] font-semibold text-gray-800 leading-4">
+                          {item.type === 'package' ? '📦' : '🧪'} {item.label}
+                        </p>
+                        <p className="text-[10px] text-gray-500 truncate">{item.subtitle}</p>
+                      </button>
+                    ))
+                  ) : (
+                    <button
+                      type="button"
+                      onMouseDown={() => {
+                        addInlineCustomNote(inlineQuery)
+                        clearInlineInput()
+                      }}
+                      className="w-full text-left px-2.5 py-2 bg-white hover:bg-gray-50"
+                    >
+                      <p className="text-[11px] font-semibold text-gray-800">Create new note</p>
+                      <p className="text-[10px] text-gray-500 truncate">{inlineQuery}</p>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={e => handleDragEnd(e, activeDayIdx)}>
               <SortableContext items={days[activeDayIdx].map(i => i._id)} strategy={verticalListSortingStrategy}>
                 <div className="space-y-2 min-h-[400px]">
                   {days[activeDayIdx].length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-48 text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-2xl bg-white mt-4">
-                      <Plus size={28} className="mb-2 text-gray-300" />
+                    <div className="flex flex-col items-center justify-center h-32 text-gray-400 text-xs border-2 border-dashed border-gray-200 rounded-lg bg-white mt-2">
+                      <Plus size={20} className="mb-1 text-gray-300" />
                       Add orders to Day {activeDayIdx + 1}
                     </div>
                   ) : (
@@ -1364,6 +2163,7 @@ function TPBuilder() {
                         task={task}
                         onRemove={id => removeFromDay(activeDayIdx, id)}
                         onUpdate={(id, field, val) => updateItem(activeDayIdx, id, field, val)}
+                        isFocused={focusedServerItemId && String(task._serverId) === String(focusedServerItemId)}
                       />
                     ))
                   )}
@@ -1372,13 +2172,15 @@ function TPBuilder() {
             </DndContext>
           </div>
         </div>
-      </div>
 
-      <button onClick={createPlan} disabled={loading || totalItems === 0}
-        className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-4 rounded-2xl font-bold text-base flex items-center justify-center gap-2 hover:opacity-90 disabled:opacity-50 transition-all shadow-lg">
-        <ClipboardList size={20} />
-        {loading ? 'Creating Plan...' : `Create Plan (${totalItems} orders across 4 days)`}
-      </button>
+        <div className="col-span-12 lg:col-span-3 bg-white rounded-lg border border-gray-200 p-2 overflow-hidden">
+          <TreatmentAuditTimeline
+            events={tpHistoryEvents}
+            onSelectEvent={handleTimelineSelect}
+            maxHeightClass="max-h-[560px]"
+          />
+        </div>
+      </div>
 
       {modal.open && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/40 backdrop-blur-[2px]">
@@ -1470,7 +2272,12 @@ export default function DoctorPortal() {
   const [tab, setTab] = useState('opd')
   const [aiMode, setAiMode] = useState(false)
   const [showAiTransition, setShowAiTransition] = useState(false)
+  const doctorPortalRef = useRef(null)
   const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const role = String(localStorage.getItem('role') || user?.role || '').toLowerCase()
+  const copyRestrictionsEnabled = !ADMIN_ROLES.has(role)
+
+  useDoctorPortalCopyProtection(doctorPortalRef, { enabled: copyRestrictionsEnabled })
 
   const toggleAI = () => {
     if (!aiMode) setShowAiTransition(true);
@@ -1502,11 +2309,13 @@ export default function DoctorPortal() {
   return (
     <>
       {showAiTransition && <AITransitionOverlay onDone={() => { setShowAiTransition(false); setAiMode(true); }} />}
-      <Layout title="Doctor Portal" subtitle={user.email || 'Doctor'} color="blue" tabs={TABS} activeTab={tab} onTab={setTab} headerExtra={AIToggleBtn}>
-        {tab === 'opd' && <OPDTab aiMode={aiMode} />}
-        {tab === 'tp' && <TPBuilder />}
-        {tab === 'analytics' && <DoctorAnalytics />}
-      </Layout>
+      <div ref={doctorPortalRef} className={copyRestrictionsEnabled ? 'doctor-portal-security-scope' : ''}>
+        <Layout title="Doctor Portal" subtitle={user.email || 'Doctor'} color="blue" tabs={TABS} activeTab={tab} onTab={setTab} headerExtra={AIToggleBtn}>
+          {tab === 'opd' && <OPDTab aiMode={aiMode} />}
+          {tab === 'tp' && <TreatmentPlansModule TPBuilderComponent={TPBuilder} />}
+          {tab === 'analytics' && <DoctorAnalytics />}
+        </Layout>
+      </div>
     </>
   )
 }

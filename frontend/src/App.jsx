@@ -1,18 +1,34 @@
 import React, { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Login from './pages/Login'
-import StaffPortal from './pages/StaffPortal'
-import DoctorPortal from './pages/DoctorPortal'
-import ReceptionistPortal from './pages/ReceptionistPortal'
-import TVDisplay from './pages/TVDisplay'
-import LabPortal from './pages/LabPortal'
-import PrintSlipPage from './pages/PrintSlipPage'
 
-// Lazy-load pharmacy so a problem in that module cannot blank the whole app (login / other portals still work).
+const StaffPortal = lazy(() => import('./pages/StaffPortal'))
+const DoctorPortal = lazy(() => import('./pages/DoctorPortal'))
+const ReceptionistPortal = lazy(() => import('./pages/ReceptionistPortal'))
+const TVDisplay = lazy(() => import('./pages/TVDisplay'))
+const LabPortal = lazy(() => import('./pages/LabPortal'))
+const PrintSlipPage = lazy(() => import('./pages/PrintSlipPage'))
 const PharmacyPortal = lazy(() => import('./pages/PharmacyPortal'))
+
+const ROLE_PATHS = {
+  staff: '/staff',
+  doctor: '/doctor',
+  receptionist: '/receptionist',
+  lab: '/lab',
+  pharmacy: '/pharmacy',
+}
 
 function PrivateRoute({ children }) {
   return localStorage.getItem('access') ? children : <Navigate to="/login" replace />
+}
+
+function HomeRedirect() {
+  const token = localStorage.getItem('access')
+  if (token) {
+    const role = localStorage.getItem('role') || 'staff'
+    return <Navigate to={ROLE_PATHS[role] || '/staff'} replace />
+  }
+  return <Navigate to="/login" replace />
 }
 
 function PageLoading() {
@@ -42,7 +58,7 @@ export default function App() {
         />
         <Route path="/tv/:roomCode" element={<TVDisplay />} />
         <Route path="/print-slip" element={<PrintSlipPage />} />
-        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/" element={<HomeRedirect />} />
       </Routes>
     </Suspense>
   )

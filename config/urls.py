@@ -34,9 +34,14 @@ urlpatterns = [
         {"document_root": settings.BASE_DIR / "frontend" / "dist" / "assets"},
     ),
     re_path(
-        r"^(?P<path>(favicon\.svg|icons\.svg|hero-3d\.png))$",
+        r"^(?P<path>(favicon\.svg|icons\.svg|hero-3d\.png|manifest\.json|sw\.js|offline\.html))$",
         static_serve,
         {"document_root": settings.BASE_DIR / "frontend" / "dist"},
+    ),
+    re_path(
+        r"^icons/(?P<path>.*)$",
+        static_serve,
+        {"document_root": settings.BASE_DIR / "frontend" / "dist" / "icons"},
     ),
     path("admin/", admin.site.urls),
     # One-click leave approve/deny from email — no login required
@@ -73,7 +78,7 @@ urlpatterns = [
     path("", include("apps.opd_templates.urls")),
     # SPA fallback: direct browser refresh/open for frontend routes should load index.html
     re_path(
-        r"^(?!api/|admin/|media/|static/|leave/|ui/|template/).*$",
+        r"^(?!api/|admin/|media/|static/|leave/|ui/|template/|icons/|sw\.js|manifest\.json|offline\.html).*$",
         frontend_index,
         name="frontend-spa-fallback",
     ),

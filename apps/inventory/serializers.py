@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from apps.inventory.models import Medicine, MedicineBatch, MedicineReorderRule, StockLedger, Unit
+from apps.inventory.models import Medicine, MedicineBatch, MedicineCategory, MedicineReorderRule, StockLedger, Unit
 
 
 class UnitSerializer(serializers.ModelSerializer):
@@ -30,12 +30,15 @@ class MedicineSerializer(serializers.ModelSerializer):
             "hospital_id",
             "sku",
             "name",
+            "company_name",
             "form",
+            "composition",
             "strength",
             "unit",
             "unit_name",
             "hsn_code",
             "pack_info",
+            "default_mrp",
             "unit_conversions",
             "gst_percent",
             "is_active",
@@ -50,11 +53,14 @@ class MedicineCreateUpdateSerializer(serializers.ModelSerializer):
         fields = [
             "sku",
             "name",
+            "company_name",
             "form",
+            "composition",
             "strength",
             "unit",
             "hsn_code",
             "pack_info",
+            "default_mrp",
             "unit_conversions",
             "gst_percent",
             "is_active",
@@ -63,6 +69,20 @@ class MedicineCreateUpdateSerializer(serializers.ModelSerializer):
             # Server assigns default TAB unit per hospital when omitted (pharmacy quick-create).
             "unit": {"required": False, "allow_null": True},
         }
+
+
+class MedicineCategorySerializer(serializers.ModelSerializer):
+    hospital_id = serializers.UUIDField(read_only=True)
+
+    class Meta:
+        model = MedicineCategory
+        fields = ["id", "hospital_id", "name", "is_active", "created_at", "updated_at"]
+
+
+class MedicineCategoryCreateUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MedicineCategory
+        fields = ["name", "is_active"]
 
 
 class MedicineBatchSerializer(serializers.ModelSerializer):

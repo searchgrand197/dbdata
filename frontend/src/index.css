@@ -11,3 +11,20 @@
   background-color: rgba(148, 163, 184, 0.6);
   border-radius: 999px;
 }
+
+.doctor-portal-security-scope .doctor-no-copy {
+  user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+}
+
+.doctor-portal-security-scope .doctor-no-copy input,
+.doctor-portal-security-scope .doctor-no-copy textarea,
+.doctor-portal-security-scope .doctor-no-copy select,
+.doctor-portal-security-scope .doctor-no-copy [contenteditable="true"],
+.doctor-portal-security-scope .doctor-no-copy [contenteditable=""],
+.doctor-portal-security-scope .doctor-no-copy [role="textbox"] {
+  user-select: text;
+  -webkit-user-select: text;
+  -ms-user-select: text;
+}

@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import App from './App'
+import InstallPrompt from './components/InstallPrompt'
 import './index.css'
 
 class RootErrorBoundary extends React.Component {
@@ -34,6 +35,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <App />
       <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
+      <InstallPrompt />
     </BrowserRouter>
   </RootErrorBoundary>
 )

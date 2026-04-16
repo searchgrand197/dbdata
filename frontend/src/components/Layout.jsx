@@ -55,7 +55,7 @@ export default function Layout({ title, subtitle, color = 'blue', children, tabs
         </div>
       )}
 
-      <main className="flex-1 overflow-auto p-4">{children}</main>
+      <main className="flex-1 overflow-auto p-4 min-h-0">{children}</main>
     </div>
   )
 }
