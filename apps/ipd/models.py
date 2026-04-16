@@ -39,6 +39,7 @@ class IPDAdmission(SoftDeleteModel, TimeStampedModel, UUIDPrimaryKeyModel):
     )
 
     ward_name = models.CharField(max_length=200, blank=True, default="")
+    department = models.CharField(max_length=120, blank=True, default="")
     room_name = models.CharField(max_length=200, blank=True, default="")
     bed_code = models.CharField(max_length=100, blank=True, default="")
 

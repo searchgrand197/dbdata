@@ -46,10 +46,19 @@ class OPDVisit(SoftDeleteModel, TimeStampedModel, UUIDPrimaryKeyModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     payment_mode = models.CharField(max_length=20, choices=PaymentMode.choices, default=PaymentMode.CASH, blank=True)
 
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="opd_visits_created",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=["hospital", "visit_date"]),
             models.Index(fields=["hospital", "doctor_user", "visit_date"]),
+            models.Index(fields=["hospital", "created_by", "visit_date"]),
             models.Index(fields=["patient", "visit_date"]),
         ]
 

@@ -5,9 +5,9 @@ from apps.ipd.models import IPDAdmission, IPDAdmissionStatusHistory, IPDTransfer
 
 @admin.register(IPDAdmission)
 class IPDAdmissionAdmin(admin.ModelAdmin):
-    list_display = ("patient", "admission_date", "status", "ward_name", "bed_code", "hospital")
+    list_display = ("patient", "admission_date", "status", "department", "ward_name", "bed_code", "hospital")
     list_filter = ("status", "hospital", "admission_date")
-    search_fields = ("patient__uhid", "ward_name", "bed_code")
+    search_fields = ("patient__uhid", "department", "ward_name", "bed_code")
     date_hierarchy = "admission_date"
 
 

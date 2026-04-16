@@ -7,8 +7,8 @@ import { format } from 'date-fns'
 import {
   Users, Printer, Plus, Tv, ArrowRight, Search, Monitor,
   Bed, AlertTriangle, FileText, UserPlus, Hospital, LogOut,
-  ChevronDown, ChevronRight, ClipboardList, Activity,
-  XCircle, CheckCircle, Clock, RefreshCw, Eye, PlusCircle,
+  ChevronDown, ChevronRight, ChevronLeft, ClipboardList, Activity,
+  XCircle, CheckCircle, Clock, RefreshCw, Eye, PlusCircle, Edit2,
   Wind, IndianRupee, Receipt, Trash2, CreditCard, Bell, Phone, X, Tag,
 } from 'lucide-react'
 import { getRoomsConfig, saveRoomsConfig, getTvGroupsConfig, saveTvGroupsConfig } from '../utils/rooms'
@@ -45,7 +45,10 @@ const NAV_GROUPS = [
   },
   {
     label: 'Billing',
-    items: [{ id: 'payment_slip', label: 'Payment Slip', icon: Receipt }],
+    items: [
+      { id: 'payment_slip', label: 'Payment Slip', icon: Receipt },
+      { id: 'payment_slip_list', label: 'Payment Slips List', icon: FileText },
+    ],
   },
   {
     label: 'Discharge',
@@ -179,6 +182,7 @@ function PrintSlip({ visit, onClose }) {
   const [layoutFields, setLayoutFields] = useState([])
   const [fieldValues, setFieldValues] = useState({})
   const [loadingTemplate, setLoadingTemplate] = useState(true)
+  const displayToken = visit.display_token || `${visit.room?.prefix || ''}${visit.token_number || visit.queue_number || ''}`
 
   useEffect(() => {
     const loadOpdLayout = async () => {
@@ -195,15 +199,16 @@ function PrintSlip({ visit, onClose }) {
               const lowerF = f.toLowerCase()
               const gAbbr = (visit.patient_gender === 'female' ? 'F' : visit.patient_gender === 'male' ? 'M' : 'O')
               const ageSexVal = [gAbbr, visit.patient_age ? String(visit.patient_age) : ''].filter(Boolean).join(' ')
-              const fullAddress = [visit.patient_address, visit.patient_city, visit.patient_state].filter(Boolean).join(', ')
+              let fullAddress = [visit.patient_address, visit.patient_city, visit.patient_state].filter(Boolean).join(', ')
+              if (fullAddress.length > 35) fullAddress = fullAddress.substring(0, 32) + '...'
               // NOTE: guardian must be checked BEFORE generic 'name' check
               if (lowerF.includes('guardian') || lowerF.includes('relative') || lowerF.includes('attendant')) initValues[f] = visit.patient_guardian_name || ''
               else if (lowerF.includes('patient') && !lowerF.includes('guardian')) initValues[f] = visit.patient_name || ''
               else if (lowerF === 'name' || (lowerF.includes('name') && !lowerF.includes('guardian'))) initValues[f] = visit.patient_name || ''
-              else if (lowerF.includes('date')) initValues[f] = visit.visit_date ? format(new Date(visit.visit_date), 'd/M/yyyy') : ''
+              else if (lowerF.includes('date')) initValues[f] = visit.visit_date ? `${format(new Date(visit.visit_date), 'd/M/yyyy')} (${visit.created_at ? format(new Date(visit.created_at), 'HH:mm') : format(new Date(), 'HH:mm')})` : ''
               else if (lowerF.includes('reg') || lowerF.includes('uhid')) initValues[f] = visit.patient_uhid || ''
               else if (lowerF.includes('phone') || lowerF.includes('mobile') || lowerF.includes('contact')) initValues[f] = visit.patient_phone || ''
-              else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) initValues[f] = String(visit.token_number || visit.queue_number || '')
+              else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) initValues[f] = displayToken
               else if (lowerF.includes('complaint') || lowerF.includes('reason')) initValues[f] = visit.chief_complaint || ''
               else if (lowerF.includes('doctor') || lowerF.includes('doc')) initValues[f] = visit.doc_name || ''
               else if (lowerF.includes('age') || lowerF.includes('sex')) initValues[f] = ageSexVal
@@ -242,8 +247,8 @@ function PrintSlip({ visit, onClose }) {
       </style></head>
       <body>
       <div class="logo">🏥 HMS Hospital</div>
-      <div class="token">${visit.room?.prefix || ''}${visit.token_number || visit.queue_number || ''}</div>
-      <div class="row"><span class="label">OPD No.</span><span>${visit.token_number || visit.queue_number || ''}</span></div>
+      <div class="token">${displayToken}</div>
+      <div class="row"><span class="label">OPD No.</span><span>${displayToken}</span></div>
       <div class="row"><span class="label">UHID</span><span>${visit.patient_uhid || ''}</span></div>
       <div class="row"><span class="label">Patient</span><span>${visit.patient_name}</span></div>
       ${visit.patient_guardian_name ? `<div class="row"><span class="label">Guardian</span><span>${visit.patient_guardian_name}</span></div>` : ''}
@@ -281,7 +286,7 @@ function PrintSlip({ visit, onClose }) {
         <div className="p-5 flex-1 overflow-y-auto">
           <div className="text-center mb-5 bg-blue-50/50 rounded-xl py-4 border border-blue-100/50">
             <div className="text-5xl font-black text-blue-600 mb-1">
-              {visit.room?.prefix || ''}{visit.token_number || visit.queue_number || ''}
+              {displayToken}
             </div>
             <p className="font-bold text-gray-900 text-lg">{visit.patient_name}</p>
             <p className="text-sm font-medium text-gray-500">{visit.room?.label || visit.doc_name || 'OPD'}</p>
@@ -339,6 +344,17 @@ function OPDSection({ rooms }) {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [showQueue, setShowQueue] = useState(false)
+  const [showCollectionModal, setShowCollectionModal] = useState(false)
+  const [handoverSummary, setHandoverSummary] = useState({
+    opening_cash_in_hand: '0.00',
+    cash_total: '0.00',
+    upi_total: '0.00',
+    other_total: '0.00',
+    grand_total: '0.00',
+  })
+  const [handoverRecipients, setHandoverRecipients] = useState([])
+  const [pendingHandovers, setPendingHandovers] = useState([])
+  const [collectionEntries, setCollectionEntries] = useState([])
 
   // Unified patient+OPD form
   const emptyForm = {
@@ -372,6 +388,19 @@ function OPDSection({ rooms }) {
   const submitActionRef = useRef('thermal')
   const [layoutFields, setLayoutFields] = useState([])
   const [templateValues, setTemplateValues] = useState({})
+  const normalizeId = (value) => (value == null ? '' : String(value))
+  const getRoomForDoctorUser = (doctorUser) => {
+    const id = normalizeId(doctorUser)
+    if (!id) return null
+    return (rooms || []).find(r => normalizeId(r.doctor_user) === id) || null
+  }
+  const buildDisplayToken = (visitLike, roomOverride = null) => {
+    const tokenRaw = visitLike?.token_number ?? visitLike?.queue_number ?? ''
+    const tokenStr = String(tokenRaw || '')
+    const roomRow = roomOverride || visitLike?.room || getRoomForDoctorUser(visitLike?.doctor_user)
+    const prefix = roomRow?.prefix || ''
+    return `${prefix}${tokenStr}`
+  }
 
   function startAddAnotherPersonSamePhone() {
     const ten = form.phone.replace(/\D/g, '').slice(-10)
@@ -397,6 +426,7 @@ function OPDSection({ rooms }) {
   useEffect(() => {
     fetchQueue()
     fetchDoctors()
+    fetchHandoverSummary()
     pollingRef.current = setInterval(fetchQueue, 15000)
 
     const loadOpdLayout = async () => {
@@ -445,12 +475,54 @@ function OPDSection({ rooms }) {
       const rawVisits = Array.isArray(v.data?.data) ? v.data.data : (v.data?.results || v.data || [])
       const doctorRows = Array.isArray(d.data?.data) ? d.data.data : (d.data?.results || d.data || [])
       setDoctors(doctorRows)
-      setVisits(rawVisits.map(vis => ({
-        ...vis,
-        doc_name: doctorRows.find(x => x.user === vis.doctor_user)?.name || vis.doctor_user || '—',
-      })))
-    } catch { toast.error('Failed to load OPD queue') }
-    finally { setLoading(false) }
+      setVisits(rawVisits.map(vis => {
+        const room = getRoomForDoctorUser(vis.doctor_user)
+        return {
+          ...vis,
+          room,
+          display_token: buildDisplayToken(vis, room),
+          doc_name: doctorRows.find(x => x.user === vis.doctor_user)?.name || vis.doctor_user || '—',
+        }
+      }))
+      // Keep shift collection totals in sync with newly created/updated visits.
+      await fetchHandoverSummary()
+    } catch {
+      toast.error('Failed to load OPD queue')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (showCollectionModal) {
+      fetchHandoverSummary()
+    }
+  }, [showCollectionModal])
+
+  async function fetchHandoverSummary() {
+    try {
+      const { data } = await api.get('/handovers/balance/')
+      const payload = data?.data || {}
+      setHandoverSummary(payload.collection || {
+        opening_cash_in_hand: '0.00',
+        cash_total: '0.00',
+        upi_total: '0.00',
+        other_total: '0.00',
+        grand_total: '0.00',
+      })
+      setHandoverRecipients(Array.isArray(payload.handover_recipients) ? payload.handover_recipients : [])
+      setPendingHandovers(Array.isArray(payload.pending_received) ? payload.pending_received : [])
+      setCollectionEntries(Array.isArray(payload.collection_entries) ? payload.collection_entries : [])
+    } catch {}
+  }
+
+  // Collection is now shift-based (includes accepted handover opening cash)
+  const collectionStats = {
+    cash: parseFloat(handoverSummary.cash_total) || 0,
+    upi: parseFloat(handoverSummary.upi_total) || 0,
+    other: parseFloat(handoverSummary.other_total) || 0,
+    total: parseFloat(handoverSummary.grand_total) || 0,
+    openingCash: parseFloat(handoverSummary.opening_cash_in_hand) || 0,
   }
 
   // Patient lookup by phone or UHID; then load full record so receptionist can edit all fields
@@ -532,6 +604,7 @@ function OPDSection({ rooms }) {
               ...f,
               patient_name: [pt.first_name, pt.last_name].filter(Boolean).join(' ') || '',
               gender: pt.gender || 'male',
+              guardian_name: pt.guardian_name || '',
             }))
           }
         }
@@ -639,6 +712,7 @@ function OPDSection({ rooms }) {
           ...(form.address_line1 ? { address_line1: form.address_line1 } : {}),
           ...(form.city        ? { city: form.city }            : {}),
           ...(form.state       ? { state: form.state }          : {}),
+          guardian_name: form.guardian_name || '',
         })
         patientId = (patRes.data?.data || patRes.data)?.id
       } else {
@@ -649,6 +723,7 @@ function OPDSection({ rooms }) {
           address_line1: form.address_line1 || '',
           city: form.city || '',
           state: form.state || '',
+          guardian_name: form.guardian_name || '',
         }
         const trimmedName = (form.patient_name || '').trim()
         if (trimmedName && trimmedName !== 'Patient') {
@@ -678,11 +753,13 @@ function OPDSection({ rooms }) {
       })
       const payload = data?.data || data
       const selectedDoc = doctors.find(d => d.user === form.doctor || d.id === form.doctor)
+      const selectedRoom = getRoomForDoctorUser(form.doctor)
       // Use form.patient_name if filled; otherwise fall back to the matched patient's name
       const ptName = (form.patient_name || '').trim() ||
         [matchedPatient?.first_name, matchedPatient?.last_name].filter(Boolean).join(' ') ||
         'Patient'
       const tokenNum = payload?.token_number || payload?.queue_number || ''
+      const displayToken = buildDisplayToken({ ...payload, doctor_user: form.doctor, token_number: tokenNum }, selectedRoom)
       toast.success(`Token #${tokenNum} assigned!`)
 
       if (submitActionRef.current === 'a4') {
@@ -694,7 +771,8 @@ function OPDSection({ rooms }) {
 
         const genderAbbr = form.gender === 'female' ? 'F' : form.gender === 'male' ? 'M' : 'O'
         const ageSex = [genderAbbr, form.age].filter(Boolean).join(' ')
-        const ptAddress = [form.address_line1, printCity, printState].filter(Boolean).join(', ')
+        let ptAddress = [form.address_line1, printCity, printState].filter(Boolean).join(', ')
+        if (ptAddress.length > 35) ptAddress = ptAddress.substring(0, 32) + '...'
 
         const finalValues = { ...templateValues }
         for (const f of layoutFields) {
@@ -703,10 +781,10 @@ function OPDSection({ rooms }) {
           if (lowerF.includes('guardian') || lowerF.includes('relative') || lowerF.includes('attendant')) finalValues[f] = finalValues[f] || printGuardian
           else if (lowerF.includes('patient') && !lowerF.includes('guardian')) finalValues[f] = finalValues[f] || ptName
           else if (lowerF === 'name' || (lowerF.includes('name') && !lowerF.includes('guardian'))) finalValues[f] = finalValues[f] || ptName
-          else if (lowerF.includes('date')) finalValues[f] = finalValues[f] || (form.visit_date ? format(new Date(form.visit_date), 'd/M/yyyy') : '')
+          else if (lowerF.includes('date')) finalValues[f] = finalValues[f] || (form.visit_date ? `${format(new Date(form.visit_date), 'd/M/yyyy')} (${format(new Date(), 'HH:mm')})` : '')
           else if (lowerF.includes('reg') || lowerF.includes('uhid')) finalValues[f] = finalValues[f] || printUhid || ''
           else if (lowerF.includes('phone') || lowerF.includes('mobile') || lowerF.includes('contact')) finalValues[f] = finalValues[f] || printPhone || form.phone.replace(/\D/g, '') || ''
-          else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) finalValues[f] = finalValues[f] || String(tokenNum)
+          else if (lowerF.includes('token') || lowerF.includes('queue') || lowerF.includes('opd') || lowerF.includes('no')) finalValues[f] = finalValues[f] || displayToken
           else if (lowerF.includes('complaint') || lowerF.includes('reason')) finalValues[f] = finalValues[f] || form.chief_complaint || ''
           else if (lowerF.includes('doctor') || lowerF.includes('doc')) finalValues[f] = finalValues[f] || selectedDoc?.name || ''
           else if (lowerF.includes('age') || lowerF.includes('sex')) finalValues[f] = finalValues[f] || ageSex
@@ -729,6 +807,8 @@ function OPDSection({ rooms }) {
           patient_city: payload?.patient_city || form.city || '',
           patient_state: payload?.patient_state || form.state || '',
           patient_guardian_name: payload?.patient_guardian_name || form.guardian_name || '',
+          room: selectedRoom || undefined,
+          display_token: displayToken,
           token_number: tokenNum,
           amount: form.amount || '',
         })
@@ -743,7 +823,7 @@ function OPDSection({ rooms }) {
       samePhoneFamilyUseConfirmedKeyRef.current = ''
       setSamePhoneFamilyModalOpen(false)
       setSamePhoneFamilyList([])
-      fetchQueue()
+      await fetchQueue()
     } catch (err) {
       const detail = err.response?.data?.detail || JSON.stringify(err.response?.data) || 'Failed'
       toast.error(detail)
@@ -824,6 +904,7 @@ function OPDSection({ rooms }) {
           address_line1: p.address_line1 || '',
           city: p.city || '',
           state: p.state || '',
+          guardian_name: p.guardian_name || '',
         }))
       }
     } catch {
@@ -832,6 +913,7 @@ function OPDSection({ rooms }) {
         ...f,
         patient_name: fullName || f.patient_name,
         gender: pt.gender || 'male',
+        guardian_name: pt.guardian_name || '',
       }))
     }
   }
@@ -858,7 +940,8 @@ function OPDSection({ rooms }) {
   const lblFilled = matchedPatient ? `${lbl} text-emerald-900` : opdNewPersonSamePhone ? `${lbl} text-amber-900` : lbl
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <>
+      <div className="flex flex-col flex-1 min-h-0">
 
       {/* ── Body ── */}
       <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
@@ -873,18 +956,38 @@ function OPDSection({ rooms }) {
             <h3 className="font-extrabold text-lg flex items-center gap-2"><Plus size={20} strokeWidth={2.5} /> New OPD Visit</h3>
             <p className="text-sm font-semibold text-emerald-100/95 leading-snug mt-0.5">Search by mobile or UHID, or register a new patient</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowQueue(q => !q)}
-            className={`shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-extrabold border-2 transition-all ${
-              showQueue
-                ? 'bg-white text-emerald-700 border-white'
-                : 'bg-white/15 text-white border-white/50 hover:bg-white/25'
-            }`}
-          >
-            <Activity size={16} strokeWidth={2.5} />
-            Queue
-          </button>
+          
+          <div className="flex items-center gap-3">
+            {/* Daily Collection Capsule */}
+            <button 
+              type="button"
+              onClick={() => setShowCollectionModal(true)}
+              className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-full transition-all group shrink-0"
+            >
+              <div className="w-5 h-5 rounded-full bg-white text-emerald-600 flex items-center justify-center">
+                <IndianRupee size={10} strokeWidth={3} />
+              </div>
+              <div className="flex flex-col items-start leading-none pr-1">
+                <span className="text-[9px] font-black text-emerald-50/70 uppercase tracking-tighter">Collection Summary</span>
+                <span className="text-xs font-black text-white leading-tight">
+                  ₹{collectionStats.total.toLocaleString('en-IN')}
+                </span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowQueue(q => !q)}
+              className={`shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-extrabold border-2 transition-all ${
+                showQueue
+                  ? 'bg-white text-emerald-700 border-white'
+                  : 'bg-white/15 text-white border-white/50 hover:bg-white/25'
+              }`}
+            >
+              <Activity size={16} strokeWidth={2.5} />
+              Queue
+            </button>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden p-4 grid grid-cols-12 gap-x-3 gap-y-3 content-start auto-rows-min">
@@ -915,7 +1018,12 @@ function OPDSection({ rooms }) {
             <div className="relative max-w-[14rem]">
               <input
                 value={form.phone}
-                onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+                onChange={e => {
+                  let v = e.target.value;
+                  // If it's purely digits, cap at 10. If it has letters (UHID), allow up to 40.
+                  if (/^\d+$/.test(v) && v.length > 10) v = v.slice(0, 10);
+                  setForm(f => ({ ...f, phone: v }));
+                }}
                 placeholder="Mobile or UHID"
                 maxLength={40}
                 className={`${inpFilled} pr-8 w-full`}
@@ -1162,6 +1270,22 @@ function OPDSection({ rooms }) {
             <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-3 shrink-0 bg-gray-50/80">
               <Activity size={16} className="text-emerald-600 shrink-0" strokeWidth={2.5} />
               <span className="font-semibold text-gray-800 text-sm flex-1">Today's OPD Queue</span>
+              
+              {/* Daily Collection Capsule */}
+              <button 
+                onClick={() => setShowCollectionModal(true)}
+                className="flex items-center gap-2 px-2.5 py-1 bg-white border border-emerald-100 rounded-full shadow-sm hover:shadow-md hover:bg-emerald-50 transition-all group shrink-0"
+              >
+                <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                  <IndianRupee size={10} strokeWidth={3} />
+                </div>
+                <div className="flex flex-col items-start leading-none pr-1">
+                  <span className="text-[9px] font-black text-emerald-600/70 uppercase tracking-tighter">Collection</span>
+                  <span className="text-xs font-black text-emerald-700 leading-tight">
+                    ₹{collectionStats.total.toLocaleString('en-IN')}
+                  </span>
+                </div>
+              </button>
               <Search size={15} className="text-gray-400 shrink-0" strokeWidth={2} />
               <input
                 value={queueSearch}
@@ -1210,6 +1334,7 @@ function OPDSection({ rooms }) {
                       {v.patient_name || 'Patient'}
                       {v.patient_uhid && <span className="ml-1 text-[11px] font-mono text-gray-400">({v.patient_uhid})</span>}
                     </p>
+                    {v.created_by_name && <p className="text-[10px] text-gray-400 font-bold">By: {v.created_by_name}</p>}
                   </div>
                   <div className="col-span-3 min-w-0">
                     <p className="text-xs text-gray-500 truncate">{v.doc_name || '—'}</p>
@@ -1288,6 +1413,10 @@ function OPDSection({ rooms }) {
                     <button
                       type="button"
                       onClick={() => selectPatientFromFamilyModal(p)}
+                      onDoubleClick={async () => {
+                        await selectPatientFromFamilyModal(p);
+                        confirmSamePhoneUseExistingPatient();
+                      }}
                       className={`w-full text-left rounded-xl px-3 py-2.5 flex items-center gap-3 transition-all border ${
                         selected
                           ? 'border-emerald-400 bg-emerald-50 shadow-sm'
@@ -1337,6 +1466,334 @@ function OPDSection({ rooms }) {
                 <UserPlus size={16} strokeWidth={2} className="text-emerald-600" />
                 Register new person on this number
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCollectionModal && (
+        <CollectionSummaryModal 
+          stats={collectionStats} 
+          entries={collectionEntries}
+          recipients={handoverRecipients}
+          pendingHandovers={pendingHandovers}
+          onHandoverSuccess={fetchHandoverSummary}
+          onClose={() => setShowCollectionModal(false)} 
+        />
+      )}
+      </div>
+    </>
+  )
+}
+
+function CollectionSummaryModal({ stats, entries, recipients, pendingHandovers, onHandoverSuccess, onClose }) {
+  const [currentPage, setCurrentPage] = useState(1)
+  const [showHandoverModal, setShowHandoverModal] = useState(false)
+  const [selectedRecipient, setSelectedRecipient] = useState('')
+  const [declaredCashAmount, setDeclaredCashAmount] = useState(stats.cash > 0 ? String(stats.cash) : '')
+  const [handoverNotes, setHandoverNotes] = useState('')
+  const [actionLoading, setActionLoading] = useState(false)
+  const itemsPerPage = 10
+  
+  const paidEntries = (entries || []).filter(v => parseFloat(v.amount) > 0)
+  const totalPages = Math.ceil(paidEntries.length / itemsPerPage)
+  
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const currentItems = paidEntries.slice(startIndex, startIndex + itemsPerPage)
+
+  async function submitHandover() {
+    if (!selectedRecipient) {
+      toast.error('Select recipient first')
+      return
+    }
+    setActionLoading(true)
+    try {
+      await api.post('/handovers/initiate/', {
+        to_user_id: selectedRecipient,
+        declared_cash_amount: declaredCashAmount || '0',
+        notes: handoverNotes,
+      })
+      toast.success('Handover request sent')
+      setDeclaredCashAmount('')
+      setHandoverNotes('')
+      setSelectedRecipient('')
+      if (onHandoverSuccess) await onHandoverSuccess()
+    } catch (err) {
+      toast.error(err?.response?.data?.errors?.detail?.[0] || 'Failed to initiate handover')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function verifyPending(handoverId, action) {
+    setActionLoading(true)
+    try {
+      await api.post('/handovers/verify/', { handover_id: handoverId, action })
+      toast.success(action === 'accept' ? 'Handover accepted' : 'Handover rejected')
+      if (onHandoverSuccess) await onHandoverSuccess()
+    } catch {
+      toast.error('Failed to process handover')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const hasOpeningCash = Number(stats.openingCash || 0) > 0
+  
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
+      <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-emerald-600">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center text-white">
+              <Receipt size={24} strokeWidth={2.5} />
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-white leading-tight">Daily Collection Summary</h2>
+              <p className="text-emerald-100 text-xs font-bold tracking-wide uppercase">{format(new Date(), 'EEEE, d MMMM yyyy')}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowHandoverModal(true)}
+              className="px-3 py-1.5 rounded-lg bg-white/15 border border-white/20 text-white text-xs font-black uppercase tracking-wide hover:bg-white/25 transition-colors"
+            >
+              Shift Handover
+            </button>
+            <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors">
+              <XCircle size={24} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 80px)' }}>
+          {/* Quick Stats Grid */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-emerald-600 mb-1">
+                <div className="w-6 h-6 rounded bg-emerald-50 flex items-center justify-center"><CreditCard size={14} /></div>
+                <span className="text-[11px] font-black uppercase tracking-wider">Cash Total</span>
+              </div>
+              <p className="text-2xl font-black text-gray-900 leading-none">₹{stats.cash.toLocaleString('en-IN')}</p>
+            </div>
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-blue-600 mb-1">
+                <div className="w-6 h-6 rounded bg-blue-50 flex items-center justify-center"><RefreshCw size={14} /></div>
+                <span className="text-[11px] font-black uppercase tracking-wider">UPI Total</span>
+              </div>
+              <p className="text-2xl font-black text-gray-900 leading-none">₹{stats.upi.toLocaleString('en-IN')}</p>
+            </div>
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm border-emerald-500 bg-emerald-50/20">
+              <div className="flex items-center gap-2 text-gray-600 mb-1">
+                <div className="w-6 h-6 rounded bg-gray-100 flex items-center justify-center"><Tag size={14} /></div>
+                <span className="text-[11px] font-black uppercase tracking-wider">Other Total</span>
+              </div>
+              <p className="text-2xl font-black text-gray-900 leading-none">₹{stats.other.toLocaleString('en-IN')}</p>
+            </div>
+          </div>
+
+          <div className="bg-gray-50/50 rounded-2xl border border-gray-100 overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 bg-white flex items-center justify-between">
+              <h3 className="text-sm font-black text-gray-700 flex items-center gap-2">
+                <Activity size={16} className="text-emerald-500" />
+                Transaction List
+              </h3>
+              <span className="text-[10px] font-black bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full uppercase">{paidEntries.length} Payments</span>
+            </div>
+            <div className="divide-y divide-gray-100/50 overflow-hidden">
+              <div className="grid grid-cols-12 px-4 py-2 text-[10px] font-black text-gray-400 uppercase tracking-widest bg-white/50">
+                <div className="col-span-1">TKN</div>
+                <div className="col-span-4">Patient Name</div>
+                <div className="col-span-2 text-right">Amount</div>
+                <div className="col-span-2 text-right">Mode</div>
+                <div className="col-span-3 text-right">Created By</div>
+              </div>
+              <div className="max-h-[450px] overflow-y-auto">
+                {paidEntries.length === 0 ? (
+                  <div className="px-4 py-12 text-center text-gray-400 italic text-sm">No collections recorded today</div>
+                ) : (
+                  <>
+                    {hasOpeningCash && (
+                      <div className="grid grid-cols-12 px-4 py-2.5 items-center bg-emerald-50/60 border-b border-emerald-100 text-sm">
+                        <div className="col-span-1 font-mono font-bold text-emerald-700">#--</div>
+                        <div className="col-span-4 font-bold text-emerald-800 truncate">Opening Cash In Hand</div>
+                        <div className="col-span-2 text-right font-black text-emerald-900">₹{Number(stats.openingCash || 0).toLocaleString('en-IN')}</div>
+                        <div className="col-span-2 text-right">
+                          <span className="text-[10px] font-black uppercase tracking-tighter px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-700">
+                            opening
+                          </span>
+                        </div>
+                        <div className="col-span-3 text-right">
+                          <span className="text-[10px] font-bold text-emerald-600 uppercase">handover</span>
+                        </div>
+                      </div>
+                    )}
+                    {currentItems.map(v => (
+                      <div key={v.id} className="grid grid-cols-12 px-4 py-2.5 items-center hover:bg-white text-sm transition-colors group">
+                        <div className="col-span-1 font-mono font-bold text-gray-400 group-hover:text-emerald-600 transition-colors">
+                          {v.entry_type === 'payment' ? 'P' : `#${v.token_number || v.queue_number || '--'}`}
+                        </div>
+                        <div className="col-span-4 font-bold text-gray-800 truncate">{v.patient_name}</div>
+                        <div className="col-span-2 text-right font-black text-gray-900">₹{v.amount}</div>
+                        <div className="col-span-2 text-right">
+                          <span className={`text-[10px] font-black uppercase tracking-tighter px-2 py-0.5 rounded-md ${
+                            v.payment_mode === 'upi' ? 'bg-blue-100 text-blue-700' :
+                            v.payment_mode === 'cash' ? 'bg-emerald-100 text-emerald-700' :
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {v.payment_mode || 'cash'}
+                          </span>
+                        </div>
+                        <div className="col-span-3 text-right">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase">{v.created_by_name || '—'}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="px-4 py-3 bg-white border-t border-gray-100 flex items-center justify-between">
+                <p className="text-[11px] font-black text-gray-400 uppercase tracking-widest">
+                  Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, paidEntries.length)} of {paidEntries.length}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-emerald-50 hover:text-emerald-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-500 transition-all"
+                  >
+                    <ChevronLeft size={16} strokeWidth={3} />
+                  </button>
+                  <div className="flex items-center gap-1">
+                    {[...Array(totalPages)].map((_, i) => (
+                      <button
+                        key={i + 1}
+                        onClick={() => setCurrentPage(i + 1)}
+                        className={`w-7 h-7 rounded-lg text-xs font-black transition-all ${
+                          currentPage === i + 1
+                            ? 'bg-emerald-600 text-white shadow-md'
+                            : 'text-gray-400 hover:bg-emerald-50 hover:text-emerald-600'
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-emerald-50 hover:text-emerald-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-500 transition-all"
+                  >
+                    <ChevronRight size={16} strokeWidth={3} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+          <p className="text-xs font-bold text-gray-400 italic">Totals represent unsettled shift collection.</p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-gray-500 uppercase">Grand Total:</span>
+            <span className="text-xl font-black text-emerald-700">₹{stats.total.toLocaleString('en-IN')}</span>
+          </div>
+        </div>
+      </div>
+      {showHandoverModal && (
+        <div className="fixed inset-0 z-[320] flex items-center justify-center p-4 bg-black/45 backdrop-blur-[2px]" onClick={() => setShowHandoverModal(false)}>
+          <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100 bg-emerald-600 text-white flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-black leading-tight">Shift Handover</h3>
+                <p className="text-[11px] font-bold text-emerald-100 uppercase tracking-wide">Transfer and verify cash responsibility</p>
+              </div>
+              <button type="button" onClick={() => setShowHandoverModal(false)} className="p-1.5 rounded-full hover:bg-white/10">
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                <p className="text-[11px] font-black uppercase tracking-wider text-emerald-700">Current Cash In Hand</p>
+                <p className="text-xl font-black text-emerald-800">₹{Number(stats.cash || 0).toLocaleString('en-IN')}</p>
+              </div>
+
+              {pendingHandovers?.length > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-xs font-black uppercase tracking-wider text-amber-700">Pending Verification</p>
+                  {pendingHandovers.map(h => (
+                    <div key={h.id} className="rounded-lg bg-white border border-amber-100 p-3">
+                      <p className="text-sm font-bold text-gray-800">
+                        {h.from_user_name} is handing over ₹{Number(h.declared_cash_amount || 0).toLocaleString('en-IN')} cash
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        System Cash: ₹{Number(h.system_cash_amount || 0).toLocaleString('en-IN')} | UPI: ₹{Number(h.system_upi_amount || 0).toLocaleString('en-IN')}
+                      </p>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => verifyPending(h.id, 'accept')}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          Verify & Accept
+                        </button>
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => verifyPending(h.id, 'reject')}
+                          className="px-3 py-1.5 rounded-lg border border-red-300 text-red-700 text-xs font-bold hover:bg-red-50 disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="rounded-xl border border-gray-200 p-3 space-y-2">
+                <p className="text-xs font-black uppercase tracking-wider text-gray-600">Initiate Handover</p>
+                <select
+                  value={selectedRecipient}
+                  onChange={e => setSelectedRecipient(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="">Select recipient</option>
+                  {(recipients || []).map(r => <option key={r.id} value={r.id}>{r.name} ({r.email})</option>)}
+                </select>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={declaredCashAmount}
+                  onChange={e => setDeclaredCashAmount(e.target.value)}
+                  placeholder="Physical Cash Counted"
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                />
+                <input
+                  type="text"
+                  value={handoverNotes}
+                  onChange={e => setHandoverNotes(e.target.value)}
+                  placeholder="Optional note (shortage/excess remarks)"
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={actionLoading}
+                  onClick={submitHandover}
+                  className="w-full py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Send Handover Request
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1522,11 +1979,162 @@ function StaffAttendanceSection() {
   )
 }
 
+function printIpdAdmitSlip({
+  admissionId,
+  admissionDate,
+  patientName,
+  patientUhid,
+  patientPhone,
+  doctorName,
+  department,
+  wardName,
+  roomName,
+  bedCode,
+  bedPrice,
+  diagnosis,
+  notes,
+}) {
+  const w = window.open('', '_blank')
+  if (!w) return
+  const now = format(new Date(), 'd/M/yyyy HH:mm:ss')
+  const admitDate = admissionDate ? format(new Date(admissionDate), 'd/M/yyyy') : format(new Date(), 'd/M/yyyy')
+  const bedPriceNum = Number(String(bedPrice || '').replace(/,/g, ''))
+  const hasBedPrice = Number.isFinite(bedPriceNum) && bedPriceNum > 0
+  const bedPriceFixed = hasBedPrice ? bedPriceNum.toFixed(2) : '0.00'
+  const safe = (v) => String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  w.document.write(`<!DOCTYPE html><html><head>
+    <meta charset="utf-8"/>
+    <title>IPD Admit Slip — ${safe(admissionId || 'New')}</title>
+    <style>
+      @page { size: A4 portrait; margin: 0; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: Arial, sans-serif; color: #111; width: 210mm; background: #fff; }
+      .slip { width: 210mm; min-height: 148.5mm; padding: 6mm 8mm 5mm; display: flex; flex-direction: column; border-bottom: 2px dashed #aaa; }
+      .top { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 4mm; border-bottom: 2px solid #111; margin-bottom: 3mm; }
+      .hosp-name { font-size: 22px; font-weight: 900; color: #1a6b3f; letter-spacing: -0.5px; line-height: 1; margin-bottom: 2px; }
+      .hosp-tag { font-size: 9px; color: #555; letter-spacing: 0.5px; text-transform: uppercase; }
+      .address { text-align: right; font-size: 9.5px; color: #333; line-height: 1.55; }
+      .address strong { font-size: 10px; }
+      .receipt-title { text-align: center; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #111; padding-bottom: 2mm; margin-bottom: 2.5mm; }
+      .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5mm 4mm; margin-bottom: 2.5mm; font-size: 10px; }
+      .info-cell { display: flex; flex-direction: column; gap: 1px; }
+      .info-label { color: #666; font-size: 9px; }
+      .info-val { font-weight: 700; color: #111; word-break: break-word; }
+      table { width: 100%; border-collapse: collapse; font-size: 10.5px; margin-top: 2.5mm; }
+      thead tr { background: #1a6b3f; color: #fff; }
+      th { padding: 3px 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+      th.c { text-align: center; width: 26px; }
+      th.l { text-align: left; }
+      th.r { text-align: right; width: 80px; }
+      tbody tr { border-bottom: 1px solid #e5e7eb; }
+      tbody tr:last-child { border-bottom: 1.5px solid #111; }
+      td { padding: 3px 5px; }
+      td.c { text-align: center; color: #555; }
+      td.l { text-align: left; }
+      td.r { text-align: right; font-weight: 700; }
+      .totals { margin-left: auto; width: 170px; margin-top: 1.5mm; font-size: 10.5px; }
+      .t-row { display: flex; justify-content: space-between; padding: 1px 5px; }
+      .t-row.disc { color: #dc2626; }
+      .t-row.final { font-weight: 800; font-size: 12px; border-top: 2px solid #111; padding-top: 2px; margin-top: 2px; color: #1a6b3f; }
+      .section-wrap { margin-top: 3mm; display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+      .section { margin-top: 0; }
+      .section-lbl { font-size: 10px; color: #6b7280; text-transform: uppercase; font-weight: 700; letter-spacing: .4px; }
+      .section-val { margin-top: 1.5mm; font-size: 11.5px; color: #111; line-height: 1.6; white-space: pre-wrap; }
+      .footer { margin-top: auto; padding-top: 2.5mm; border-top: 1px dashed #aaa; display: flex; justify-content: space-between; align-items: flex-end; gap: 8mm; font-size: 9px; color: #555; }
+      .note { max-width: 62%; line-height: 1.5; }
+      .status-box { border: 2px solid #1a6b3f; color: #1a6b3f; font-weight: 900; font-size: 12px; padding: 2px 10px; border-radius: 4px; letter-spacing: 1.5px; }
+      .sig { text-align: right; margin-top: 6mm; }
+      .sig-line { width: 45mm; border-top: 1px solid #9ca3af; margin-left: auto; margin-bottom: 2px; }
+    </style>
+  </head><body>
+    <div class="slip">
+      <div class="top">
+        <div>
+          <div class="hosp-name">Vardraan Hospital</div>
+          <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
+        </div>
+        <div class="address">
+          <strong>Jind, Haryana</strong><br/>
+          Pincode: 126102<br/>
+          Phone: +91-XXXXXXXXXX<br/>
+          Email: info@vardraanhospital.com
+        </div>
+      </div>
+
+      <div class="receipt-title">IPD Admission Slip</div>
+
+        <div class="info-grid">
+        <div class="info-cell"><span class="info-label">Admission ID</span><span class="info-val">${safe(admissionId || '--')}</span></div>
+        <div class="info-cell"><span class="info-label">Admission Date</span><span class="info-val">${safe(admitDate)}</span></div>
+        <div class="info-cell"><span class="info-label">Generated At</span><span class="info-val">${safe(now)}</span></div>
+        <div class="info-cell"><span class="info-label">Patient Name</span><span class="info-val">${safe(patientName || 'Patient')}</span></div>
+        <div class="info-cell"><span class="info-label">UHID</span><span class="info-val">${safe(patientUhid || '--')}</span></div>
+        <div class="info-cell"><span class="info-label">Mobile No.</span><span class="info-val">${safe(patientPhone || '--')}</span></div>
+        <div class="info-cell"><span class="info-label">Department</span><span class="info-val">${safe(department || '--')}</span></div>
+        <div class="info-cell"><span class="info-label">Assigned Doctor</span><span class="info-val">${safe(doctorName || '--')}</span></div>
+        <div class="info-cell"><span class="info-label">Bed Allocation</span><span class="info-val">${safe(wardName || '--')} / ${safe(roomName || '--')} / ${safe(bedCode || '--')}</span></div>
+          <div class="info-cell"><span class="info-label">Bed Price (Per Day)</span><span class="info-val">₹${hasBedPrice ? bedPriceFixed : '--'}</span></div>
+      </div>
+
+      <div class="section-wrap">
+        <div class="section">
+          <div class="section-lbl">Admission Diagnosis</div>
+          <div class="section-val">${safe(diagnosis || '--')}</div>
+        </div>
+        <div class="section">
+          <div class="section-lbl">Admission Notes</div>
+          <div class="section-val">${safe(notes || '--')}</div>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th class="c">SL No.</th>
+            <th class="l">Charge Head</th>
+            <th class="r">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="c">1</td>
+            <td class="l">Bed Charge (Per Day)</td>
+            <td class="r">₹${bedPriceFixed}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="totals">
+        <div class="t-row"><span>Total Amount:</span><span>₹${bedPriceFixed}</span></div>
+        <div class="t-row disc"><span>Discount:</span><span>₹0.00</span></div>
+        <div class="t-row.final"><span>Net Amount:</span><span>₹${bedPriceFixed}</span></div>
+      </div>
+
+      <div class="footer">
+        <div class="note">
+          <strong>Note:</strong> Please keep this slip for IPD desk verification, billing, and internal ward handover records.
+        </div>
+        <div>
+          <div class="status-box">ADMITTED</div>
+          <div class="sig">
+            <div class="sig-line"></div>
+            Authorized Signature
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>window.onload = () => window.print()</script>
+  </body></html>`)
+  w.document.close()
+}
+
 // ─── IPD Admissions ───────────────────────────────────────────────────────────
 function IPDSection({ mode }) {
   const [admissions, setAdmissions] = useState([])
   const [patients, setPatients] = useState([])
   const [doctors, setDoctors] = useState([])
+  const [departments, setDepartments] = useState([])
+  const [bedPriceMap, setBedPriceMap] = useState({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
@@ -1537,11 +2145,12 @@ function IPDSection({ mode }) {
   }, [search])
 
   const [form, setForm] = useState({
-    patient: '', assigned_doctor: '', ward_name: '', bed_code: '',
+    patient: '', assigned_doctor: '', department: '', ward_name: '', bed_code: '',
     admission_date: format(new Date(), 'yyyy-MM-dd'), admission_diagnosis: '', admission_notes: '',
   })
   const [submitting, setSubmitting] = useState(false)
   const [selected, setSelected] = useState(null)
+  const [autoDischarge, setAutoDischarge] = useState(false)
   const [showBedPicker, setShowBedPicker] = useState(false)
   const [pickedBed, setPickedBed] = useState(null)
 
@@ -1554,11 +2163,14 @@ function IPDSection({ mode }) {
 
   const [showPayments, setShowPayments] = useState(null) // admission object
   const [showAddCharge, setShowAddCharge] = useState(null) // admission object
+  const [autoPrintAdmitSlip, setAutoPrintAdmitSlip] = useState(false)
 
   useEffect(() => {
     fetchAdmissions()
     fetchPatients()
     fetchDoctors()
+    fetchDepartments()
+    fetchBedPrices()
   }, [mode])
 
   async function fetchAdmissions() {
@@ -1581,6 +2193,30 @@ function IPDSection({ mode }) {
     try {
       const { data } = await api.get('/doctor-profiles/?limit=500')
       setDoctors(data?.data || data?.results || data || [])
+    } catch {}
+  }
+
+  async function fetchDepartments() {
+    try {
+      const { data } = await api.get('/departments/?limit=500')
+      setDepartments(Array.isArray(data?.data) ? data.data : (data?.results || data || []))
+    } catch {}
+  }
+
+  async function fetchBedPrices() {
+    try {
+      const { data } = await api.get('/beds/beds/by-floor/')
+      const floors = Array.isArray(data?.data) ? data.data : (data || [])
+      const priceByCode = {}
+      for (const floor of floors) {
+        for (const room of (floor?.rooms || [])) {
+          const roomCharge = Number(room?.daily_charge || 0)
+          for (const bed of (room?.beds || [])) {
+            if (bed?.bed_code) priceByCode[String(bed.bed_code)] = roomCharge
+          }
+        }
+      }
+      setBedPriceMap(priceByCode)
     } catch {}
   }
 
@@ -1611,6 +2247,7 @@ function IPDSection({ mode }) {
     e.preventDefault()
     
     let targetPatientId = selectedPatient?.id
+    let currentPatient = selectedPatient
 
     if (isAddingNew) {
       if (!newPt.name.trim()) { toast.error('Patient name is required'); return }
@@ -1626,22 +2263,44 @@ function IPDSection({ mode }) {
         const { data } = await api.post('/patients/', payload)
         const created = data?.data || data?.entity || data
         targetPatientId = created.id
+        currentPatient = created
       } catch (err) {
         toast.error('Failed to create new patient'); setSubmitting(false); return
       }
     }
 
     if (!targetPatientId) { toast.error('Select or Register a patient first'); return }
+    if (!form.department) { toast.error('Select department'); return }
     if (!form.bed_code) { toast.error('Select a bed first'); return }
 
     setSubmitting(true)
     try {
-      await api.post('/ipd-admissions/', { ...form, patient: targetPatientId })
+      const { data } = await api.post('/ipd-admissions/', { ...form, patient: targetPatientId })
+      const admitted = data?.data || data?.entity || data
+      if (autoPrintAdmitSlip) {
+        const doc = doctors.find(d => (d.user || d.id) === form.assigned_doctor)
+        printIpdAdmitSlip({
+          admissionId: admitted?.id,
+          admissionDate: admitted?.admission_date || form.admission_date,
+          patientName: [currentPatient?.first_name, currentPatient?.last_name].filter(Boolean).join(' ') || currentPatient?.name,
+          patientUhid: currentPatient?.uhid,
+          patientPhone: currentPatient?.phone || newPt.phone,
+          doctorName: doc?.name || [doc?.first_name, doc?.last_name].filter(Boolean).join(' '),
+          department: form.department,
+          wardName: form.ward_name,
+          roomName: form.room_name,
+          bedCode: form.bed_code,
+          bedPrice: pickedBed?.daily_charge ? Number(pickedBed.daily_charge).toLocaleString('en-IN') : '--',
+          diagnosis: form.admission_diagnosis,
+          notes: form.admission_notes,
+        })
+      }
       toast.success('Patient admitted successfully!')
       setForm({
-        patient: '', assigned_doctor: '', ward_name: '', bed_code: '',
+        patient: '', assigned_doctor: '', department: '', ward_name: '', bed_code: '',
         admission_date: format(new Date(), 'yyyy-MM-dd'), admission_diagnosis: '', admission_notes: '',
       })
+      setAutoPrintAdmitSlip(false)
       setSelectedPatient(null)
       setIsAddingNew(false)
       setNewPt({ name: '', phone: '', address: '' })
@@ -1652,14 +2311,28 @@ function IPDSection({ mode }) {
     } finally { setSubmitting(false) }
   }
 
-  async function discharge(id) {
-    if (!window.confirm('Mark patient as discharged?')) return
-    try {
-      await api.patch(`/ipd-admissions/${id}/`, { status: 'discharged' })
-      toast.success('Patient discharged')
-      fetchAdmissions()
-    } catch { toast.error('Failed to discharge') }
+  function reprintAdmitSlip(admission) {
+    const patientRow = patients.find(p => String(p.id) === String(admission.patient))
+    const doc = doctors.find(d => (d.user || d.id) === admission.assigned_doctor)
+    const bedPrice = bedPriceMap[String(admission.bed_code || '')]
+    printIpdAdmitSlip({
+      admissionId: admission.id,
+      admissionDate: admission.admission_date,
+      patientName: admission.patient_name || [patientRow?.first_name, patientRow?.last_name].filter(Boolean).join(' '),
+      patientUhid: admission.patient_uhid || patientRow?.uhid,
+      patientPhone: patientRow?.phone || '',
+      doctorName: doc?.name || [doc?.first_name, doc?.last_name].filter(Boolean).join(' ') || admission.assigned_doctor_email,
+      department: admission.department,
+      wardName: admission.ward_name,
+      roomName: admission.room_name,
+      bedCode: admission.bed_code,
+      bedPrice: Number.isFinite(bedPrice) && bedPrice > 0 ? Number(bedPrice).toLocaleString('en-IN') : '--',
+      diagnosis: admission.admission_diagnosis,
+      notes: admission.admission_notes,
+    })
   }
+
+  // Removed old simple discharge function
 
   const statusColors = {
     admitted: 'bg-blue-100 text-blue-700',
@@ -1700,7 +2373,11 @@ function IPDSection({ mode }) {
                   </div>
                   <input className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-900 bg-gray-50/50" value={newPt.name} readOnly />
                   <input className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
-                    value={newPt.phone} onChange={e => setNewPt(p => ({ ...p, phone: e.target.value }))} placeholder="Mobile Number (Optional)" />
+                    type="tel" maxLength={10}
+                    value={newPt.phone} onChange={e => {
+                      const v = e.target.value.replace(/\D/g, '').slice(0, 10);
+                      setNewPt(p => ({ ...p, phone: v }));
+                    }} placeholder="10-digit Mobile" />
                   <input className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
                     value={newPt.address} onChange={e => setNewPt(p => ({ ...p, address: e.target.value }))} placeholder="Address (Optional)" />
                 </div>
@@ -1757,6 +2434,22 @@ function IPDSection({ mode }) {
                 {doctors.map(d => (
                   <option key={d.user || d.id} value={d.user || d.id}>
                     {d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || d.user}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Department *</label>
+              <select
+                value={form.department}
+                onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                required
+              >
+                <option value="">-- Select department --</option>
+                {departments.map(dep => (
+                  <option key={dep.id} value={dep.name || dep.code || ''}>
+                    {dep.name || dep.code}
                   </option>
                 ))}
               </select>
@@ -1830,7 +2523,16 @@ function IPDSection({ mode }) {
               rows={3} placeholder="Additional notes..."
               className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none" />
           </div>
-          <button type="submit" disabled={submitting || (!selectedPatient && !isAddingNew) || !form.bed_code}
+          <label className="flex items-center gap-2 text-sm text-gray-700 select-none">
+            <input
+              type="checkbox"
+              checked={autoPrintAdmitSlip}
+              onChange={e => setAutoPrintAdmitSlip(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Print admit slip automatically
+          </label>
+          <button type="submit" disabled={submitting || (!selectedPatient && !isAddingNew) || !form.department || !form.bed_code}
             className="bg-blue-600 text-white px-6 py-3 rounded-xl text-sm font-black uppercase tracking-widest hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2">
             <Bed size={16} /> {submitting ? 'Processing…' : isAddingNew ? 'Register & Admit Patient' : 'Admit Patient'}
           </button>
@@ -1895,7 +2597,7 @@ function IPDSection({ mode }) {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-gray-800 truncate">{a.patient_name || a.patient}</p>
                   <p className="text-xs text-gray-400 truncate">
-                    {a.ward_name || 'No Ward'} · Bed {a.bed_code || '—'} · Admitted {a.admission_date}
+                    {a.department || 'No Dept'} · {a.ward_name || 'No Ward'} · Bed {a.bed_code || '—'} · Admitted {a.admission_date ? `${format(new Date(a.admission_date), 'd/M/yyyy')} (${format(new Date(a.created_at || Date.now()), 'HH:mm')})` : '—'}
                   </p>
                   {a.admission_diagnosis && (
                     <p className="text-xs text-gray-500 truncate mt-0.5">Dx: {a.admission_diagnosis}</p>
@@ -1905,11 +2607,17 @@ function IPDSection({ mode }) {
                   {a.status}
                 </span>
                 {a.status === 'admitted' && (
-                  <button onClick={() => discharge(a.id)}
+                  <button onClick={() => { setSelected(a); setAutoDischarge(true); }}
                     className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-lg hover:bg-green-200 font-semibold flex items-center gap-1">
                     <CheckCircle size={12} /> Discharge
                   </button>
                 )}
+                <button
+                  onClick={() => reprintAdmitSlip(a)}
+                  className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg hover:bg-blue-200 font-semibold flex items-center gap-1"
+                >
+                  <Printer size={12} /> Print Slip
+                </button>
                 <button onClick={() => setSelected(selected?.id === a.id ? null : a)}
                   className="shrink-0 text-gray-400 hover:text-blue-500 rounded-xl px-2">
                   <div className="flex items-center gap-1.5 text-xs bg-gray-100 hover:bg-blue-100 text-gray-700 hover:text-blue-700 px-3 py-1.5 rounded-lg font-bold transition-colors">
@@ -1945,7 +2653,12 @@ function IPDSection({ mode }) {
       )}
 
       {selected && (
-        <AdmissionLedgerModal admission={selected} onClose={() => setSelected(null)} />
+        <AdmissionLedgerModal 
+          admission={selected} 
+          onClose={() => { setSelected(null); setAutoDischarge(false); }} 
+          autoDischarge={autoDischarge}
+          onDischargeInitiated={() => setAutoDischarge(false)}
+        />
       )}
     </div>
   )
@@ -2154,8 +2867,48 @@ function EmergencySection() {
   const [cases, setCases] = useState([])
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({ patient_name: '', contact: '', complaint: '', triage: 'yellow' })
+  const [selectedCase, setSelectedCase] = useState(null)
+  const [admitCase, setAdmitCase] = useState(null)
+  const [doctors, setDoctors] = useState([])
+  const [departments, setDepartments] = useState([])
+  const [showBedPicker, setShowBedPicker] = useState(false)
+  const [pickedBed, setPickedBed] = useState(null)
+  const [admitting, setAdmitting] = useState(false)
+  const [chargeCase, setChargeCase] = useState(null)
+  const [charging, setCharging] = useState(false)
+  const [admitForm, setAdmitForm] = useState({
+    assigned_doctor: '',
+    department: '',
+    admission_diagnosis: '',
+    admission_notes: '',
+    auto_print_admit_slip: false,
+  })
+  const [chargeForm, setChargeForm] = useState({
+    description: 'Emergency Consultation',
+    amount: '',
+    payment_mode: 'cash',
+    auto_print: false,
+  })
 
-  useEffect(() => { loadCases() }, [])
+  useEffect(() => {
+    loadCases()
+    fetchDoctors()
+    fetchDepartments()
+  }, [])
+
+  async function fetchDoctors() {
+    try {
+      const { data } = await api.get('/doctor-profiles/?limit=500')
+      setDoctors(Array.isArray(data?.data) ? data.data : (data?.results || data || []))
+    } catch {}
+  }
+
+  async function fetchDepartments() {
+    try {
+      const { data } = await api.get('/departments/?limit=500')
+      setDepartments(Array.isArray(data?.data) ? data.data : (data?.results || data || []))
+    } catch {}
+  }
 
   function loadCases() {
     setLoading(true)
@@ -2183,6 +2936,327 @@ function EmergencySection() {
     const updated = cases.map(c => c.id === id ? { ...c, status } : c)
     localStorage.setItem('emergency_cases', JSON.stringify(updated))
     setCases(updated)
+  }
+
+  function openChargeModal(c) {
+    setChargeCase(c)
+    setChargeForm({
+      description: 'Emergency Consultation',
+      amount: '',
+      payment_mode: 'cash',
+      auto_print: false,
+    })
+  }
+
+  function printEmergencyReceipt({ invoiceNo, patientName, patientUhid, patientPhone, description, amount, paymentMode }) {
+    const w = window.open('', '_blank')
+    if (!w) return
+    const dateTimeStr = format(new Date(), 'd/M/yyyy HH:mm:ss')
+    const upPatient = (patientName || 'PATIENT').toUpperCase()
+    const payModeLabel =
+      paymentMode === 'cash'
+        ? 'Cash Payment'
+        : paymentMode === 'card'
+          ? 'Card Payment'
+          : paymentMode === 'upi'
+            ? 'UPI Payment'
+            : (paymentMode || 'Payment').toUpperCase()
+    const amountFixed = Number(amount || 0).toFixed(2)
+
+    w.document.write(`<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>Receipt — ${invoiceNo || 'Payment'}</title>
+      <style>
+        @page { size: A4 portrait; margin: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; font-size: 11px; color: #111; width: 210mm; background: #fff; }
+        .slip { width: 210mm; height: 148.5mm; padding: 6mm 8mm 4mm; display: flex; flex-direction: column; border-bottom: 2px dashed #aaa; }
+        .top { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 4mm; border-bottom: 2px solid #111; margin-bottom: 3mm; }
+        .hosp-name { font-size: 22px; font-weight: 900; color: #1a6b3f; letter-spacing: -0.5px; line-height: 1; margin-bottom: 2px; }
+        .hosp-tag { font-size: 9px; color: #555; letter-spacing: 0.5px; text-transform: uppercase; }
+        .address { text-align: right; font-size: 9.5px; color: #333; line-height: 1.55; }
+        .address strong { font-size: 10px; }
+        .receipt-title { text-align: center; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #111; padding-bottom: 2mm; margin-bottom: 2.5mm; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5mm 4mm; margin-bottom: 2.5mm; font-size: 10px; }
+        .info-cell { display: flex; flex-direction: column; gap: 1px; }
+        .info-label { color: #666; font-size: 9px; }
+        .info-val { font-weight: 700; color: #111; }
+        table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+        thead tr { background: #1a6b3f; color: #fff; }
+        th { padding: 3px 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+        th.c { text-align: center; width: 26px; }
+        th.l { text-align: left; }
+        th.r { text-align: right; width: 52px; }
+        tbody tr { border-bottom: 1px solid #e5e7eb; }
+        tbody tr:last-child { border-bottom: 1.5px solid #111; }
+        td { padding: 3px 5px; }
+        td.c { text-align: center; color: #555; }
+        td.l { text-align: left; }
+        td.r { text-align: right; font-weight: 600; }
+        .totals { margin-left: auto; width: 160px; margin-top: 1mm; font-size: 10.5px; }
+        .t-row { display: flex; justify-content: space-between; padding: 1px 5px; }
+        .t-row.disc { color: #dc2626; }
+        .t-row.final { font-weight: 800; font-size: 12px; border-top: 2px solid #111; padding-top: 2px; margin-top: 2px; color: #1a6b3f; }
+        .footer { margin-top: auto; padding-top: 2mm; border-top: 1px dashed #aaa; display: flex; justify-content: space-between; align-items: flex-end; font-size: 9px; color: #555; }
+        .note { max-width: 65%; line-height: 1.5; }
+        .paid-box { border: 2px solid #1a6b3f; color: #1a6b3f; font-weight: 900; font-size: 13px; padding: 2px 10px; border-radius: 4px; letter-spacing: 2px; }
+      </style>
+    </head><body>
+      <div class="slip">
+        <div class="top">
+          <div>
+            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
+          </div>
+          <div class="address">
+            <strong>Jind, Haryana</strong><br/>
+            Pincode: 126102<br/>
+            Phone: +91-XXXXXXXXXX<br/>
+            Email: info@vardraanhospital.com
+          </div>
+        </div>
+        <div class="receipt-title">Receipt</div>
+        <div class="info-grid">
+          <div class="info-cell"><span class="info-label">Invoice Number</span><span class="info-val">${invoiceNo || '--'}</span></div>
+          <div class="info-cell"><span class="info-label">Name</span><span class="info-val">${upPatient}</span></div>
+          <div class="info-cell"><span class="info-label">Gender / Age</span><span class="info-val">Other</span></div>
+          <div class="info-cell"><span class="info-label">Pay Mode</span><span class="info-val">${payModeLabel}</span></div>
+          <div class="info-cell"><span class="info-label">Mobile No.</span><span class="info-val">${patientPhone || '—'}</span></div>
+          <div class="info-cell"><span class="info-label">Date</span><span class="info-val">${dateTimeStr}</span></div>
+        </div>
+        <table>
+          <thead><tr><th class="c">SL No.</th><th class="l">Test Type / Service</th><th class="r">Amount</th></tr></thead>
+          <tbody><tr><td class="c">1</td><td class="l">${description || 'Payment'}</td><td class="r">₹${amountFixed}</td></tr></tbody>
+        </table>
+        <div class="totals">
+          <div class="t-row"><span>Total Amount:</span><span>₹${amountFixed}</span></div>
+          <div class="t-row disc"><span>Discount:</span><span>₹0.00</span></div>
+          <div class="t-row.final"><span>Net Amount:</span><span>₹${amountFixed}</span></div>
+        </div>
+        <div class="footer">
+          <div class="note"><strong>Note:</strong> Your reports will be preserved only for 6 months.<br/>Please retain this receipt for future reference.</div>
+          <div class="paid-box">✓ PAID</div>
+        </div>
+      </div>
+      <script>window.onload = () => window.print()</script>
+    </body></html>`)
+    w.document.close()
+  }
+
+  async function resolveEmergencyPatient(caseRow) {
+    const digits = String(caseRow?.contact || '').replace(/\D/g, '').slice(-10)
+    if (digits.length === 10) {
+      try {
+        const { data } = await api.get(`/patients/?search=${encodeURIComponent(digits)}&limit=10`)
+        const rows = Array.isArray(data?.data) ? data.data : (data?.results || [])
+        const exact = rows.find(p => String(p.phone || '').replace(/\D/g, '').slice(-10) === digits)
+        if (exact?.id) return exact
+      } catch {}
+    }
+
+    const parts = String(caseRow?.patient_name || 'Emergency Patient').trim().split(/\s+/)
+    const payload = {
+      first_name: parts[0] || 'Emergency',
+      last_name: parts.slice(1).join(' ') || 'Patient',
+      phone: digits || '',
+    }
+    const { data } = await api.post('/patients/', payload)
+    return data?.data || data?.entity || data
+  }
+
+  async function saveChargeAndAttend(e) {
+    e.preventDefault()
+    if (!chargeCase) return
+    const amount = parseFloat(chargeForm.amount)
+    if (!amount || amount <= 0) {
+      toast.error('Enter valid charge amount')
+      return
+    }
+
+    setCharging(true)
+    try {
+      const patient = await resolveEmergencyPatient(chargeCase)
+      if (!patient?.id) {
+        toast.error('Could not resolve patient for payment slip')
+        setCharging(false)
+        return
+      }
+
+      const invoicePayload = {
+        patient: patient.id,
+        // Backend does not support "emergency" encounter_type; use OPD bucket for ER slips.
+        encounter_type: 'opd',
+        status: 'finalized',
+        discount_amount: '0.00',
+        items: [{
+          description: chargeForm.description?.trim() || 'Emergency Service',
+          quantity: 1,
+          unit_price: amount,
+        }],
+      }
+      const { data } = await api.post('/invoices/', invoicePayload)
+      const inv = data?.data || data?.entity || data
+
+      await api.post('/payments/', {
+        invoice: inv.id,
+        payment_mode: chargeForm.payment_mode || 'cash',
+        amount: amount.toFixed(2),
+        status: 'success',
+      })
+
+      const updated = cases.map(c => c.id === chargeCase.id ? {
+        ...c,
+        status: 'attended',
+        attended_at: new Date().toISOString(),
+        charge_amount: amount.toFixed(2),
+        charge_invoice_no: inv.invoice_no || '',
+      } : c)
+      localStorage.setItem('emergency_cases', JSON.stringify(updated))
+      setCases(updated)
+
+      if (chargeForm.auto_print) {
+        printEmergencyReceipt({
+          invoiceNo: inv.invoice_no,
+          patientName: [patient.first_name, patient.last_name].filter(Boolean).join(' '),
+          patientUhid: patient.uhid,
+          patientPhone: patient.phone,
+          description: chargeForm.description,
+          amount,
+          paymentMode: chargeForm.payment_mode,
+        })
+      }
+
+      toast.success(`Payment slip generated: ${inv.invoice_no || 'Saved'}`)
+      toast.success('Emergency case marked attended')
+      setChargeCase(null)
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || JSON.stringify(err?.response?.data) || 'Failed to generate payment slip')
+    } finally {
+      setCharging(false)
+    }
+  }
+
+  function handleBedSelect(bedInfo) {
+    setPickedBed(bedInfo)
+  }
+
+  function openAdmitModal(c) {
+    setAdmitCase(c)
+    setAdmitForm({
+      assigned_doctor: '',
+      department: '',
+      admission_diagnosis: c.complaint || '',
+      admission_notes: '',
+      auto_print_admit_slip: false,
+    })
+    setPickedBed(null)
+  }
+
+  async function admitToIpd(e) {
+    e.preventDefault()
+    if (!admitCase) return
+    if (!pickedBed?.bed_code) {
+      toast.error('Select a bed first')
+      return
+    }
+    if (!admitForm.department) {
+      toast.error('Select department')
+      return
+    }
+    setAdmitting(true)
+    try {
+      const digits = String(admitCase.contact || '').replace(/\D/g, '').slice(-10)
+      let patientId = null
+      let patientRecord = null
+
+      if (digits.length === 10) {
+        try {
+          const { data } = await api.get(`/patients/?search=${encodeURIComponent(digits)}&limit=10`)
+          const rows = Array.isArray(data?.data) ? data.data : (data?.results || [])
+          const exact = rows.find(p => String(p.phone || '').replace(/\D/g, '').slice(-10) === digits)
+          if (exact?.id) {
+            patientId = exact.id
+            patientRecord = exact
+          }
+        } catch {}
+      }
+
+      if (!patientId) {
+        const parts = String(admitCase.patient_name || 'Emergency Patient').trim().split(/\s+/)
+        const payload = {
+          first_name: parts[0] || 'Emergency',
+          last_name: parts.slice(1).join(' ') || 'Patient',
+          phone: digits || '',
+        }
+        const { data } = await api.post('/patients/', payload)
+        const created = data?.data || data?.entity || data
+        patientId = created?.id
+        patientRecord = created
+      }
+
+      if (!patientId) {
+        toast.error('Could not resolve patient for admission')
+        setAdmitting(false)
+        return
+      }
+
+      const diagnosis = admitForm.admission_diagnosis?.trim() || admitCase.complaint || 'Emergency admission'
+      const notes = [
+        admitForm.admission_notes?.trim(),
+        `Emergency triage: ${(admitCase.triage || '').toUpperCase()}`,
+        `Arrival: ${admitCase.arrived_at ? format(new Date(admitCase.arrived_at), 'd/M/yyyy HH:mm') : 'N/A'}`,
+        admitCase.complaint ? `Chief complaint: ${admitCase.complaint}` : '',
+      ].filter(Boolean).join('\n')
+
+      const { data } = await api.post('/ipd-admissions/', {
+        patient: patientId,
+        assigned_doctor: admitForm.assigned_doctor || null,
+        department: admitForm.department,
+        ward_name: pickedBed.ward_name,
+        room_name: pickedBed.room_name,
+        bed_code: pickedBed.bed_code,
+        admission_date: format(new Date(), 'yyyy-MM-dd'),
+        admission_diagnosis: diagnosis,
+        admission_notes: notes,
+      })
+      const admitted = data?.data || data?.entity || data
+
+      if (admitForm.auto_print_admit_slip) {
+        const doc = doctors.find(d => (d.user || d.id) === admitForm.assigned_doctor)
+        printIpdAdmitSlip({
+          admissionId: admitted?.id,
+          admissionDate: admitted?.admission_date || format(new Date(), 'yyyy-MM-dd'),
+          patientName: [patientRecord?.first_name, patientRecord?.last_name].filter(Boolean).join(' ') || admitCase.patient_name,
+          patientUhid: patientRecord?.uhid,
+          patientPhone: patientRecord?.phone || admitCase.contact,
+          doctorName: doc?.name || [doc?.first_name, doc?.last_name].filter(Boolean).join(' '),
+          department: admitForm.department,
+          wardName: pickedBed.ward_name,
+          roomName: pickedBed.room_name,
+          bedCode: pickedBed.bed_code,
+          bedPrice: pickedBed?.daily_charge ? Number(pickedBed.daily_charge).toLocaleString('en-IN') : '--',
+          diagnosis,
+          notes,
+        })
+      }
+
+      const updated = cases.map(c => c.id === admitCase.id ? {
+        ...c,
+        status: 'admitted',
+        admitted_at: new Date().toISOString(),
+        admitted_bed: pickedBed.bed_code,
+      } : c)
+      localStorage.setItem('emergency_cases', JSON.stringify(updated))
+      setCases(updated)
+
+      toast.success('Emergency patient admitted to IPD')
+      setAdmitCase(null)
+      setPickedBed(null)
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || JSON.stringify(err?.response?.data) || 'Failed to admit patient')
+    } finally {
+      setAdmitting(false)
+    }
   }
 
   const triageColors = {
@@ -2258,23 +3332,296 @@ function EmergencySection() {
               <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${triageDot[c.triage]}`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-gray-800">{c.patient_name}</p>
-                <p className="text-xs text-gray-400">{c.complaint} · {format(new Date(c.arrived_at), 'HH:mm')} · {c.contact || 'No contact'}</p>
+                <p className="text-xs text-gray-400">{c.complaint} · {format(new Date(c.arrived_at), 'd/M/yyyy (HH:mm)')} · {c.contact || 'No contact'}</p>
               </div>
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${triageColors[c.triage]}`}>
                 {c.triage === 'red' ? 'Critical' : c.triage === 'yellow' ? 'Moderate' : 'Minor'}
               </span>
+              <button
+                onClick={() => setSelectedCase(c)}
+                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg font-semibold hover:bg-blue-200"
+              >
+                View
+              </button>
+              {c.status === 'waiting' && (
+                <button
+                  onClick={() => openAdmitModal(c)}
+                  className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-semibold hover:bg-indigo-200"
+                >
+                  Admit to IPD
+                </button>
+              )}
               {c.status === 'waiting' ? (
-                <button onClick={() => updateStatus(c.id, 'attended')}
+                <button onClick={() => openChargeModal(c)}
                   className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-lg font-semibold hover:bg-green-200">
                   Mark Attended
                 </button>
               ) : (
-                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-lg">Attended</span>
+                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-lg capitalize">{c.status}</span>
               )}
             </div>
           ))}
         </div>
       </div>
+
+      {selectedCase && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/40" onClick={() => setSelectedCase(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-rose-600 text-white flex items-center justify-between">
+              <div>
+                <p className="text-lg font-bold leading-tight">{selectedCase.patient_name}</p>
+                <p className="text-red-100 text-xs">Emergency Case Details</p>
+              </div>
+              <button onClick={() => setSelectedCase(null)} className="text-white/80 hover:text-white">
+                <XCircle size={20} />
+              </button>
+            </div>
+            <div className="p-5 grid grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-[11px] text-gray-400 uppercase">Contact</p>
+                <p className="text-sm font-semibold text-gray-800">{selectedCase.contact || 'No contact'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-[11px] text-gray-400 uppercase">Triage</p>
+                <p className="text-sm font-semibold text-gray-800 capitalize">{selectedCase.triage}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl p-3 col-span-2">
+                <p className="text-[11px] text-gray-400 uppercase">Complaint</p>
+                <p className="text-sm font-semibold text-gray-800">{selectedCase.complaint || '—'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-[11px] text-gray-400 uppercase">Arrived At</p>
+                <p className="text-sm font-semibold text-gray-800">{selectedCase.arrived_at ? format(new Date(selectedCase.arrived_at), 'd/M/yyyy (HH:mm)') : '—'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-[11px] text-gray-400 uppercase">Status</p>
+                <p className="text-sm font-semibold text-gray-800 capitalize">{selectedCase.status || 'waiting'}</p>
+              </div>
+            </div>
+            <div className="px-5 pb-4 flex gap-2">
+              <button onClick={() => setSelectedCase(null)} className="flex-1 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 font-medium">
+                Close
+              </button>
+              {selectedCase.status === 'waiting' && (
+                <button
+                  onClick={() => {
+                    setSelectedCase(null)
+                    openAdmitModal(selectedCase)
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
+                >
+                  Admit to IPD
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {admitCase && (
+        <div className="fixed inset-0 z-[320] flex items-center justify-center p-4 bg-black/50" onClick={() => setAdmitCase(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 bg-gradient-to-r from-indigo-600 to-blue-700 text-white flex items-center justify-between">
+              <div>
+                <p className="text-lg font-bold leading-tight">Admit Emergency Patient</p>
+                <p className="text-indigo-100 text-xs">{admitCase.patient_name} · {admitCase.contact || 'No contact'}</p>
+              </div>
+              <button onClick={() => setAdmitCase(null)} className="text-white/80 hover:text-white">
+                <XCircle size={20} />
+              </button>
+            </div>
+            <form onSubmit={admitToIpd} className="p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Assigned Doctor</label>
+                  <select
+                    value={admitForm.assigned_doctor}
+                    onChange={e => setAdmitForm(f => ({ ...f, assigned_doctor: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  >
+                    <option value="">-- Select doctor --</option>
+                    {doctors.map(d => (
+                      <option key={d.user || d.id} value={d.user || d.id}>
+                        {d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || d.user}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Department *</label>
+                  <select
+                    value={admitForm.department}
+                    onChange={e => setAdmitForm(f => ({ ...f, department: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    required
+                  >
+                    <option value="">-- Select department --</option>
+                    {departments.map(dep => (
+                      <option key={dep.id} value={dep.name || dep.code || ''}>
+                        {dep.name || dep.code}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Admission Diagnosis</label>
+                  <input
+                    value={admitForm.admission_diagnosis}
+                    onChange={e => setAdmitForm(f => ({ ...f, admission_diagnosis: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    placeholder="Primary diagnosis"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Bed Assignment *</label>
+                {pickedBed ? (
+                  <div className="flex items-center gap-3 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                    <div className="w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                      <Bed size={16} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-gray-800">{pickedBed.bed_code} · {pickedBed.room_name}</p>
+                      <p className="text-xs text-gray-500">{pickedBed.floor_name} · ₹{Number(pickedBed.daily_charge || 0).toLocaleString()}/day</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowBedPicker(true)}
+                      className="text-xs bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg font-semibold hover:bg-indigo-200"
+                    >
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowBedPicker(true)}
+                    className="w-full border-2 border-dashed border-indigo-300 bg-indigo-50/50 hover:bg-indigo-50 rounded-xl py-3 text-sm text-indigo-700 font-semibold"
+                  >
+                    Select Floor & Bed
+                  </button>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Admission Notes</label>
+                <textarea
+                  rows={3}
+                  value={admitForm.admission_notes}
+                  onChange={e => setAdmitForm(f => ({ ...f, admission_notes: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none"
+                  placeholder="Additional admission notes..."
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 select-none">
+                <input
+                  type="checkbox"
+                  checked={admitForm.auto_print_admit_slip}
+                  onChange={e => setAdmitForm(f => ({ ...f, auto_print_admit_slip: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                Print admit slip automatically
+              </label>
+
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setAdmitCase(null)} className="flex-1 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 font-medium">
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={admitting || !admitForm.department || !pickedBed?.bed_code}
+                  className="flex-1 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {admitting ? 'Admitting…' : 'Admit to IPD'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showBedPicker && (
+        <BedSelector
+          onSelect={handleBedSelect}
+          onClose={() => setShowBedPicker(false)}
+          zIndexClass="z-[360]"
+        />
+      )}
+
+      {chargeCase && (
+        <div className="fixed inset-0 z-[330] flex items-center justify-center p-4 bg-black/50" onClick={() => setChargeCase(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-green-700 text-white flex items-center justify-between">
+              <div>
+                <p className="text-lg font-bold leading-tight">Mark Attended & Create Slip</p>
+                <p className="text-emerald-100 text-xs">{chargeCase.patient_name}</p>
+              </div>
+              <button onClick={() => setChargeCase(null)} className="text-white/80 hover:text-white">
+                <XCircle size={20} />
+              </button>
+            </div>
+            <form onSubmit={saveChargeAndAttend} className="p-5 space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Service Description</label>
+                <input
+                  value={chargeForm.description}
+                  onChange={e => setChargeForm(f => ({ ...f, description: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  placeholder="Emergency Consultation"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Charge Amount (INR) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={chargeForm.amount}
+                  onChange={e => setChargeForm(f => ({ ...f, amount: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  placeholder="Enter amount"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Payment Mode</label>
+                <select
+                  value={chargeForm.payment_mode}
+                  onChange={e => setChargeForm(f => ({ ...f, payment_mode: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                >
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 select-none">
+                <input
+                  type="checkbox"
+                  checked={chargeForm.auto_print}
+                  onChange={e => setChargeForm(f => ({ ...f, auto_print: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                Print slip automatically after attending
+              </label>
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setChargeCase(null)} className="flex-1 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 font-medium">
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={charging}
+                  className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {charging ? 'Saving…' : 'Create Slip & Attend'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2560,7 +3907,14 @@ function RegisterPatientSection() {
           />
         </div>
       ) : (
-        <input type={type} value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        <input type={type} 
+          value={form[key]} 
+          onChange={e => {
+            let v = e.target.value;
+            if (type === 'tel') v = v.replace(/\D/g, '').slice(0, 10);
+            setForm(f => ({ ...f, [key]: v }));
+          }}
+          maxLength={type === 'tel' ? 10 : undefined}
           placeholder={placeholder} required={required}
           className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none" />
       )}
@@ -2666,7 +4020,7 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
           </div>
           <div className="doc-meta">
             <p><strong>REPORT ID:</strong> DIS-{rec.id.slice(0, 8).toUpperCase()}</p>
-            <p><strong>DATE:</strong> {format(new Date(rec.created_at || Date.now()), 'd/M/yyyy')}</p>
+            <p><strong>DATE:</strong> {format(new Date(rec.created_at || Date.now()), 'd/M/yyyy (HH:mm)')}</p>
           </div>
         </div>
         
@@ -2675,7 +4029,7 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
         <div className="patient-grid">
           <div className="data-point"><p className="lbl">Patient Name</p><p className="val">{rec.patient_name}</p></div>
           <div className="data-point"><p className="lbl">UHID Number</p><p className="val">{rec.patient_uhid || '—'}</p></div>
-          <div className="data-point"><p className="lbl">Admission Date</p><p className="val">{rec.admission_date ? format(new Date(rec.admission_date), 'd/M/yyyy') : '-'}</p></div>
+          <div className="data-point"><p className="lbl">Admission Date</p><p className="val">{rec.admission_date ? `${format(new Date(rec.admission_date), 'd/M/yyyy')} (${format(new Date(rec.admission_created_at || Date.now()), 'HH:mm')})` : '-'}</p></div>
           <div className="data-point"><p className="lbl">Discharge Date</p><p className="val">{format(new Date(rec.created_at || Date.now()), 'd/M/yyyy')}</p></div>
         </div>
         
@@ -2865,7 +4219,7 @@ function DischargeSection() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-gray-800">{r.patient_name || 'Unknown Patient'}</p>
                   <p className="text-xs text-gray-400">
-                    Adm: {r.admission_date} · ID: {r.id.slice(0,8)}
+                    Adm: {r.admission_date ? `${format(new Date(r.admission_date), 'd/M/yyyy')} (${format(new Date(r.created_at || Date.now()), 'HH:mm')})` : '--'} · ID: {r.id.slice(0,8)}
                   </p>
                 </div>
                 <div className="text-right mr-4">
@@ -2911,7 +4265,8 @@ function DischargeSection() {
 }
 
 // ─── Payment Slip ─────────────────────────────────────────────────────────────
-const COMMON_SERVICES = [
+const QUICK_SERVICES_STORAGE_KEY = 'payment_quick_services'
+const DEFAULT_QUICK_SERVICES = [
   { label: 'X-Ray', price: 300 },
   { label: 'ECG', price: 200 },
   { label: 'Blood Test (CBC)', price: 250 },
@@ -2940,6 +4295,26 @@ function PaymentSlipSection() {
 
   const [isAddingNew, setIsAddingNew] = useState(false)
   const [newPt, setNewPt] = useState({ name: '', phone: '', address: '' })
+  const [quickServices, setQuickServices] = useState(DEFAULT_QUICK_SERVICES)
+  const [showQuickServiceEditor, setShowQuickServiceEditor] = useState(false)
+  const [newQuickLabel, setNewQuickLabel] = useState('')
+  const [newQuickPrice, setNewQuickPrice] = useState('')
+
+  useEffect(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(QUICK_SERVICES_STORAGE_KEY) || '[]')
+      if (Array.isArray(raw) && raw.length > 0) {
+        const normalized = raw
+          .map(s => ({ label: String(s?.label || '').trim(), price: Number(s?.price || 0) }))
+          .filter(s => s.label && Number.isFinite(s.price) && s.price >= 0)
+        if (normalized.length > 0) setQuickServices(normalized)
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(QUICK_SERVICES_STORAGE_KEY, JSON.stringify(quickServices))
+  }, [quickServices])
 
   useEffect(() => {
     if (ptSearch.trim().length < 2) { setPtResults([]); return }
@@ -2971,6 +4346,32 @@ function PaymentSlipSection() {
       }
       return [...prev, { description: svc.label, unit_price: svc.price, quantity: 1 }]
     })
+  }
+
+  function moveQuickService(index, direction) {
+    setQuickServices(prev => {
+      const to = index + direction
+      if (to < 0 || to >= prev.length) return prev
+      const copy = [...prev]
+      const tmp = copy[index]
+      copy[index] = copy[to]
+      copy[to] = tmp
+      return copy
+    })
+  }
+
+  function addQuickService() {
+    const label = newQuickLabel.trim()
+    const price = parseFloat(newQuickPrice)
+    if (!label) { toast.error('Service label is required'); return }
+    if (Number.isNaN(price) || price < 0) { toast.error('Enter valid price'); return }
+    setQuickServices(prev => [...prev, { label, price }])
+    setNewQuickLabel('')
+    setNewQuickPrice('')
+  }
+
+  function removeQuickService(index) {
+    setQuickServices(prev => prev.filter((_, i) => i !== index))
   }
 
   const subtotal = items.reduce((sum, it) => {
@@ -3028,6 +4429,15 @@ function PaymentSlipSection() {
       }
       const { data } = await api.post('/invoices/', payload)
       const inv = data?.data || data?.entity || data
+
+      // Also record an actual payment transaction so it appears in Payment Slips List.
+      await api.post('/payments/', {
+        invoice: inv.id,
+        payment_mode: paymentMode,
+        amount: total.toFixed(2),
+        status: 'success',
+      })
+
       setInvoice({ 
         ...inv, 
         patient: currentPatient || { 
@@ -3038,7 +4448,7 @@ function PaymentSlipSection() {
         paymentMode, subtotal, discountAmt, total, referredBy, purpose 
       })
       toast.success(`Invoice ${inv.invoice_no} created!`)
-      toast.success(`Invoice ${inv.invoice_no} created!`)
+      toast.success('Payment slip recorded successfully!')
     } catch (err) {
       toast.error(err.response?.data?.detail || JSON.stringify(err.response?.data) || 'Failed to create invoice')
     } finally { setSubmitting(false) }
@@ -3386,7 +4796,12 @@ function PaymentSlipSection() {
                     <button type="button" onClick={() => { setIsAddingNew(false); setPtSearch(newPt.name) }} className="text-[10px] text-gray-400 font-bold hover:text-red-500 underline">Cancel</button>
                   </div>
                   <input className={`${inp} py-1.5 text-xs ring-1 ring-emerald-100`} value={newPt.name} readOnly placeholder="Name" />
-                  <input className={`${inp} py-1.5 text-xs`} value={newPt.phone} onChange={e => setNewPt(p => ({ ...p, phone: e.target.value }))} placeholder="Mobile Number (Optional)" />
+                  <input className={`${inp} py-1.5 text-xs`} 
+                    type="tel" maxLength={10}
+                    value={newPt.phone} onChange={e => {
+                      const v = e.target.value.replace(/\D/g, '').slice(0, 10);
+                      setNewPt(p => ({ ...p, phone: v }));
+                    }} placeholder="10-digit Mobile" />
                   <input className={`${inp} py-1.5 text-xs`} value={newPt.address} onChange={e => setNewPt(p => ({ ...p, address: e.target.value }))} placeholder="Address" />
                 </div>
               ) : (
@@ -3427,9 +4842,18 @@ function PaymentSlipSection() {
 
             {/* Quick services */}
             <div className="bg-white rounded-xl border border-gray-200 p-3 shrink-0">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Quick Add</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Quick Add</p>
+                <button
+                  type="button"
+                  onClick={() => setShowQuickServiceEditor(true)}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 px-2 py-1 rounded border border-indigo-200 bg-indigo-50"
+                >
+                  Edit Quick Add
+                </button>
+              </div>
               <div className="flex flex-wrap gap-1.5">
-                {COMMON_SERVICES.map(svc => (
+                {quickServices.map(svc => (
                   <button key={svc.label} type="button" onClick={() => quickAdd(svc)}
                     className="text-[11px] px-2.5 py-1 rounded-full border border-gray-200 bg-gray-50 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-800 text-gray-600 transition-colors">
                     {svc.label} <span className="text-gray-400">₹{svc.price}</span>
@@ -3539,6 +4963,76 @@ function PaymentSlipSection() {
             </button>
           </div>
         </form>
+      )}
+      {showQuickServiceEditor && (
+        <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden">
+            <div className="bg-indigo-600 px-4 py-3 flex items-center justify-between">
+              <h3 className="text-white font-bold">Edit Quick Add Services</h3>
+              <button type="button" onClick={() => setShowQuickServiceEditor(false)} className="text-white/80 hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-4 space-y-3 max-h-[75vh] overflow-y-auto">
+              <div className="grid grid-cols-12 gap-2 text-[10px] font-black uppercase tracking-wider text-gray-400 px-1">
+                <div className="col-span-5">Service</div>
+                <div className="col-span-3">Price</div>
+                <div className="col-span-4 text-right">Actions</div>
+              </div>
+              {quickServices.map((svc, i) => (
+                <div key={`${svc.label}-${i}`} className="grid grid-cols-12 gap-2 items-center border border-gray-100 rounded-xl p-2">
+                  <input
+                    value={svc.label}
+                    onChange={e => setQuickServices(prev => prev.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x))}
+                    className="col-span-5 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={svc.price}
+                    onChange={e => setQuickServices(prev => prev.map((x, idx) => idx === i ? { ...x, price: Number(e.target.value || 0) } : x))}
+                    className="col-span-3 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                  <div className="col-span-4 flex justify-end gap-1.5">
+                    <button type="button" onClick={() => moveQuickService(i, -1)} className="px-2 py-1 text-xs font-bold rounded bg-gray-100 hover:bg-gray-200">Up</button>
+                    <button type="button" onClick={() => moveQuickService(i, 1)} className="px-2 py-1 text-xs font-bold rounded bg-gray-100 hover:bg-gray-200">Down</button>
+                    <button type="button" onClick={() => removeQuickService(i)} className="px-2 py-1 text-xs font-bold rounded bg-red-50 text-red-600 hover:bg-red-100">Delete</button>
+                  </div>
+                </div>
+              ))}
+
+              <div className="border-t border-gray-100 pt-3 mt-2">
+                <p className="text-xs font-black text-gray-500 uppercase tracking-wider mb-2">Create New Quick Add</p>
+                <div className="grid grid-cols-12 gap-2">
+                  <input
+                    value={newQuickLabel}
+                    onChange={e => setNewQuickLabel(e.target.value)}
+                    placeholder="Service name"
+                    className="col-span-7 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={newQuickPrice}
+                    onChange={e => setNewQuickPrice(e.target.value)}
+                    placeholder="Price"
+                    className="col-span-3 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                  <button type="button" onClick={addQuickService} className="col-span-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700">
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="px-4 py-3 border-t border-gray-100 bg-gray-50 flex justify-end">
+              <button type="button" onClick={() => { setShowQuickServiceEditor(false); toast.success('Quick Add services updated') }} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700">
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -3957,6 +5451,7 @@ function OpdSlipsSection() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const [editingVisit, setEditingVisit] = useState(null)
+  const [viewVisit, setViewVisit] = useState(null)
   const [doctors, setDoctors] = useState([])
   const PAGE_SIZE = 10
   const debounceRef = useRef(null)
@@ -4032,11 +5527,11 @@ function OpdSlipsSection() {
         
         <div className="grid grid-cols-12 px-4 py-2 bg-gray-100/80 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
           <div className="col-span-2">Date/OPD No</div>
-          <div className="col-span-3">Patient</div>
+          <div className="col-span-2">Patient</div>
           <div className="col-span-2">Doctor</div>
           <div className="col-span-2">Complaint</div>
           <div className="col-span-2 text-center">Status / Amt</div>
-          <div className="col-span-1 text-right">Action</div>
+          <div className="col-span-2 text-right">Action</div>
         </div>
 
         <div className="divide-y divide-gray-50 flex-1">
@@ -4046,9 +5541,10 @@ function OpdSlipsSection() {
                   <span className="font-bold text-gray-800">{v.visit_date ? format(new Date(v.visit_date), 'd/M/yyyy') : '--'}</span>
                   <span className="text-xs text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 mt-0.5 rounded">#{v.queue_number || v.token_number}</span>
                 </div>
-                <div className="col-span-3 min-w-0 pr-2">
+                <div className="col-span-2 min-w-0 pr-2">
                   <p className="font-bold text-gray-800 truncate">{v.patient_name || 'Patient'}</p>
                   <p className="text-[10px] text-gray-500 font-mono truncate">{v.patient_uhid}</p>
+                  {v.created_by_name && <p className="text-[10px] text-gray-400 font-bold mt-0.5">By: {v.created_by_name}</p>}
                 </div>
                 <div className="col-span-2 min-w-0 pr-2">
                   <span className="text-gray-600 truncate block">{v.doctor_name || '-'}</span>
@@ -4062,8 +5558,13 @@ function OpdSlipsSection() {
                   </span>
                   {v.amount && <span className="text-xs font-bold text-gray-600 border border-gray-200 px-1.5 rounded bg-gray-50 flex items-center"><IndianRupee size={10} className="mr-0.5"/> {v.amount} <span className="ml-1 text-[9px] uppercase">({v.payment_mode || 'CASH'})</span></span>}
                 </div>
-                <div className="col-span-1 text-right">
-                  <button onClick={() => setEditingVisit(v)} className="text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors">Edit</button>
+                <div className="col-span-2 flex flex-row gap-2 items-center justify-end">
+                  <button onClick={() => setViewVisit(v)} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group">
+                    <Eye size={12} className="group-hover:scale-110 transition-transform" /> View
+                  </button>
+                  <button onClick={() => setEditingVisit(v)} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group">
+                    <Edit2 size={12} className="group-hover:scale-110 transition-transform" /> Edit
+                  </button>
                 </div>
              </div>
           ))}
@@ -4162,6 +5663,636 @@ function OpdSlipsSection() {
           </form>
         </div>
       )}
+      
+      {viewVisit && (
+        <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col">
+            <div className="bg-gray-800 px-5 py-4 flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center font-black text-lg shadow-inner">
+                  {viewVisit.patient_name?.charAt(0) || 'P'}
+                </div>
+                <div>
+                  <h2 className="font-bold text-lg leading-tight">{viewVisit.patient_name || '--'}</h2>
+                  <p className="text-xs text-gray-400 font-mono tracking-tighter">{viewVisit.patient_uhid || 'No UHID'}</p>
+                </div>
+              </div>
+              <button onClick={() => setViewVisit(null)} className="text-gray-400 hover:text-white transition-colors p-1.5 hover:bg-white/10 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-2 gap-8">
+                {/* Left Column: Demographics */}
+                <div className="space-y-5">
+                  <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
+                    <Users size={18} className="text-emerald-500" />
+                    <h3 className="text-sm font-black text-gray-800 uppercase tracking-wider">Patient Demographics</h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                      <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Gender</p>
+                      <p className="text-sm font-bold text-gray-800 capitalize">{viewVisit.patient_gender || '--'}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                      <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Age</p>
+                      <p className="text-sm font-bold text-gray-800">{viewVisit.patient_age ? `${viewVisit.patient_age} Years` : '--'}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Phone Number</span>
+                      <span className="text-sm font-bold text-gray-800 flex items-center gap-1.5 mt-0.5">
+                        <Phone size={13} className="text-emerald-500" /> {viewVisit.patient_phone || '--'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Guardian / Relative</span>
+                      <span className="text-sm font-bold text-gray-700 mt-0.5">{viewVisit.patient_guardian_name || '--'}</span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Full Address</span>
+                      <span className="text-sm font-bold text-gray-700 mt-0.5 leading-relaxed">
+                        {viewVisit.patient_address || '--'}
+                        {(viewVisit.patient_city || viewVisit.patient_state) && (
+                          <span className="block text-xs font-medium text-gray-500 mt-0.5">
+                            {viewVisit.patient_city}{viewVisit.patient_city && viewVisit.patient_state ? ', ' : ''}{viewVisit.patient_state}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Visit & Financials */}
+                <div className="space-y-5">
+                  <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
+                    <Activity size={18} className="text-blue-500" />
+                    <h3 className="text-sm font-black text-gray-800 uppercase tracking-wider">Visit & Financials</h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Consulting Doctor</span>
+                      <span className="text-sm font-bold text-gray-700">{viewVisit.doctor_name || '--'}</span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Token / Date</span>
+                      <span className="text-sm font-bold text-gray-700">#{viewVisit.queue_number || viewVisit.token_number} · {viewVisit.visit_date ? format(new Date(viewVisit.visit_date), 'd/M/yyyy') : '--'}</span>
+                    </div>
+                    <div className="flex flex-col col-span-2">
+                      <span className="text-[10px] font-black text-gray-400 uppercase">Registration Time</span>
+                      <span className="text-sm font-bold text-gray-600">
+                        {viewVisit.created_at ? format(new Date(viewVisit.created_at), 'd/M/yyyy (HH:mm)') : '--'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col col-span-2">
+                      <span className="text-[10px] font-black text-gray-400 uppercase mb-1">Chief Complaint</span>
+                      <span className="text-sm font-bold text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg inline-block leading-tight">{viewVisit.visit_reason || 'No complaint specified'}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-2xl p-3.5 shadow-sm relative overflow-hidden group">
+                    <div>
+                      <p className="text-[10px] font-black text-emerald-600/60 uppercase tracking-widest mb-0.5">Billing Amount</p>
+                      <p className="text-2xl font-black text-emerald-700 flex items-baseline gap-1.5 focus:outline-none">
+                        <span className="text-lg opacity-40">₹</span>{viewVisit.amount || '0'}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Payment Mode</p>
+                      <span className="text-[11px] font-black px-2.5 py-1 rounded-full bg-emerald-600 text-white uppercase shadow-sm">{viewVisit.payment_mode || 'Cash'}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Current Status</span>
+                    <span className={`text-xs font-black px-3 py-1 rounded-full uppercase tracking-tighter shadow-sm border ${statusColors[viewVisit.status] || 'bg-gray-100 text-gray-800'}`}>
+                      {viewVisit.status?.replace('_', ' ')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-gray-100 bg-gray-50 flex gap-4">
+              <button onClick={() => setViewVisit(null)} 
+                className="flex-1 py-3 px-4 rounded-xl font-black text-xs text-gray-500 hover:bg-white hover:text-gray-800 hover:shadow-md transition-all flex items-center justify-center gap-2 uppercase tracking-[0.2em] border border-transparent hover:border-gray-200 active:scale-95 group">
+                <X size={16} className="group-hover:rotate-90 transition-transform duration-300" /> Close
+              </button>
+              <button onClick={() => { setEditingVisit(viewVisit); setViewVisit(null); }} 
+                className="flex-[1.5] py-3 px-4 bg-emerald-600 text-white rounded-xl font-black text-xs hover:bg-emerald-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
+                <Edit2 size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" /> Edit Visit Details
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Payment Slips / History ───────────────────────────────────────────────────
+function PaymentSlipsListSection() {
+  const [payments, setPayments] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const [editingPayment, setEditingPayment] = useState(null)
+  const [viewPayment, setViewPayment] = useState(null)
+  const PAGE_SIZE = 10
+  const debounceRef = useRef(null)
+
+  useEffect(() => {
+    setPage(0)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => fetchPayments(0, search), 300)
+    return () => clearTimeout(debounceRef.current)
+  }, [search])
+
+  useEffect(() => { fetchPayments(page, search) }, [page])
+
+  async function fetchPayments(pg = 0, q = '') {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ limit: PAGE_SIZE, offset: pg * PAGE_SIZE, ordering: '-paid_at' })
+      if (q.trim()) params.set('search', q.trim())
+      const { data } = await api.get(`/payments/?${params}`)
+      setPayments(data?.data || data?.results || data || [])
+      setTotal(data?.count ?? data?.total ?? (data?.data?.length ?? 0))
+    } catch {
+      toast.error('Failed to load payment slips')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toDateTimeInputValue(v) {
+    if (!v) return ''
+    const d = new Date(v)
+    if (Number.isNaN(d.getTime())) return ''
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const min = String(d.getMinutes()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}`
+  }
+
+  async function handleSaveEdit(e) {
+    e.preventDefault()
+    try {
+      await api.patch(`/payments/${editingPayment.id}/`, {
+        payment_mode: editingPayment.payment_mode || 'cash',
+        amount: editingPayment.amount || 0,
+        transaction_reference: editingPayment.transaction_reference || '',
+        receipt_no: editingPayment.receipt_no || '',
+        status: editingPayment.status || 'success',
+        paid_at: editingPayment.paid_at || null,
+      })
+      toast.success('Payment slip updated!')
+      setEditingPayment(null)
+      fetchPayments(page, search)
+    } catch {
+      toast.error('Failed to update payment slip')
+    }
+  }
+
+  function printPaymentSlip(payment) {
+    if (!payment) return
+    const w = window.open('', '_blank')
+    const dateTimeStr = payment.paid_at ? format(new Date(payment.paid_at), 'd/M/yyyy HH:mm:ss') : format(new Date(), 'd/M/yyyy HH:mm:ss')
+    const patientName = (payment.patient_name || 'PATIENT').toUpperCase()
+    const payModeLabel =
+      payment.payment_mode === 'cash'
+        ? 'Cash Payment'
+        : payment.payment_mode === 'card'
+          ? 'Card Payment'
+          : payment.payment_mode === 'upi'
+            ? 'UPI Payment'
+            : (payment.payment_mode || 'Payment').toUpperCase()
+    const amountNum = Number(payment.amount || 0)
+    const amountFixed = Number.isFinite(amountNum) ? amountNum.toFixed(2) : '0.00'
+    const description = payment.transaction_reference || payment.receipt_no || 'Payment'
+
+    w.document.write(`<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>Receipt — ${payment.invoice_no || payment.receipt_no || 'Payment'}</title>
+      <style>
+        @page { size: A4 portrait; margin: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+          font-family: Arial, sans-serif;
+          font-size: 11px;
+          color: #111;
+          width: 210mm;
+          background: #fff;
+        }
+        .slip {
+          width: 210mm;
+          height: 148.5mm;
+          padding: 6mm 8mm 4mm;
+          display: flex;
+          flex-direction: column;
+          border-bottom: 2px dashed #aaa;
+        }
+        .top {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          padding-bottom: 4mm;
+          border-bottom: 2px solid #111;
+          margin-bottom: 3mm;
+        }
+        .hosp-name {
+          font-size: 22px;
+          font-weight: 900;
+          color: #1a6b3f;
+          letter-spacing: -0.5px;
+          line-height: 1;
+          margin-bottom: 2px;
+        }
+        .hosp-tag { font-size: 9px; color: #555; letter-spacing: 0.5px; text-transform: uppercase; }
+        .address { text-align: right; font-size: 9.5px; color: #333; line-height: 1.55; }
+        .address strong { font-size: 10px; }
+        .receipt-title {
+          text-align: center;
+          font-size: 13px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 2px;
+          border-bottom: 1px solid #111;
+          padding-bottom: 2mm;
+          margin-bottom: 2.5mm;
+        }
+        .info-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 1.5mm 4mm;
+          margin-bottom: 2.5mm;
+          font-size: 10px;
+        }
+        .info-cell { display: flex; flex-direction: column; gap: 1px; }
+        .info-label { color: #666; font-size: 9px; }
+        .info-val { font-weight: 700; color: #111; }
+        table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+        thead tr { background: #1a6b3f; color: #fff; }
+        th { padding: 3px 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+        th.c { text-align: center; width: 26px; }
+        th.l { text-align: left; }
+        th.r { text-align: right; width: 52px; }
+        tbody tr { border-bottom: 1px solid #e5e7eb; }
+        tbody tr:last-child { border-bottom: 1.5px solid #111; }
+        td { padding: 3px 5px; }
+        td.c { text-align: center; color: #555; }
+        td.l { text-align: left; }
+        td.r { text-align: right; font-weight: 600; }
+        .totals { margin-left: auto; width: 160px; margin-top: 1mm; font-size: 10.5px; }
+        .t-row { display: flex; justify-content: space-between; padding: 1px 5px; }
+        .t-row.disc { color: #dc2626; }
+        .t-row.final {
+          font-weight: 800;
+          font-size: 12px;
+          border-top: 2px solid #111;
+          padding-top: 2px;
+          margin-top: 2px;
+          color: #1a6b3f;
+        }
+        .footer {
+          margin-top: auto;
+          padding-top: 2mm;
+          border-top: 1px dashed #aaa;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-end;
+          font-size: 9px;
+          color: #555;
+        }
+        .note { max-width: 65%; line-height: 1.5; }
+        .paid-box {
+          border: 2px solid #1a6b3f;
+          color: #1a6b3f;
+          font-weight: 900;
+          font-size: 13px;
+          padding: 2px 10px;
+          border-radius: 4px;
+          letter-spacing: 2px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="slip">
+        <div class="top">
+          <div>
+            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
+          </div>
+          <div class="address">
+            <strong>Jind, Haryana</strong><br/>
+            Pincode: 126102<br/>
+            Phone: +91-XXXXXXXXXX<br/>
+            Email: info@vardraanhospital.com
+          </div>
+        </div>
+
+        <div class="receipt-title">Receipt</div>
+
+        <div class="info-grid">
+          <div class="info-cell">
+            <span class="info-label">Invoice Number</span>
+            <span class="info-val">${payment.invoice_no || '--'}</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">Name</span>
+            <span class="info-val">${patientName}</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">Gender / Age</span>
+            <span class="info-val">Other</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">Pay Mode</span>
+            <span class="info-val">${payModeLabel}</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">Mobile No.</span>
+            <span class="info-val">—</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">Date</span>
+            <span class="info-val">${dateTimeStr}</span>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th class="c">SL No.</th>
+              <th class="l">Test Type / Service</th>
+              <th class="r">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="c">1</td>
+              <td class="l">${description}</td>
+              <td class="r">₹${amountFixed}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="totals">
+          <div class="t-row"><span>Total Amount:</span><span>₹${amountFixed}</span></div>
+          <div class="t-row disc"><span>Discount:</span><span>₹0.00</span></div>
+          <div class="t-row.final"><span>Net Amount:</span><span>₹${amountFixed}</span></div>
+        </div>
+
+        <div class="footer">
+          <div class="note">
+            <strong>Note:</strong> Your reports will be preserved only for 6 months.<br/>
+            Please retain this receipt for future reference.
+          </div>
+          <div class="paid-box">✓ PAID</div>
+        </div>
+      </div>
+      <script>window.onload = () => window.print()</script>
+    </body></html>`)
+    w.document.close()
+  }
+
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+  const statusColors = {
+    success: 'bg-emerald-100 text-emerald-800',
+    pending: 'bg-amber-100 text-amber-800',
+    failed: 'bg-red-100 text-red-800',
+    cancelled: 'bg-gray-200 text-gray-800',
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        {[['Total Slips', total, 'text-gray-900'], ['Showing', total === 0 ? '0' : `${page * PAGE_SIZE + 1}-${Math.min((page + 1) * PAGE_SIZE, total)}`, 'text-emerald-600']].map(([l, v, c]) => (
+          <div key={l} className="bg-white rounded-xl p-3 shadow-sm border border-gray-100 flex items-center gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">{l}</p>
+              <p className={`text-2xl font-black ${c}`}>{v}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden relative flex flex-col min-h-[calc(100vh-320px)]">
+        <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-3 bg-gray-50/60">
+          <Search size={15} className="text-gray-400 shrink-0" strokeWidth={2} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by invoice, UHID, ref, receipt…" className="flex-1 text-sm outline-none bg-transparent placeholder:text-gray-400" />
+          {loading && <span className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+          <button onClick={() => fetchPayments(page, search)} className="text-gray-400 hover:text-emerald-600 shrink-0"><RefreshCw size={14} strokeWidth={2} /></button>
+          <span className="text-xs text-gray-400 shrink-0">{total} slips</span>
+        </div>
+
+        <div className="grid grid-cols-12 px-4 py-2 bg-gray-100/80 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+          <div className="col-span-2">Date/Receipt</div>
+          <div className="col-span-2">Patient</div>
+          <div className="col-span-2">Invoice/Mode</div>
+          <div className="col-span-2 text-center">Status / Amt</div>
+          <div className="col-span-2">Ref</div>
+          <div className="col-span-2 text-right">Action</div>
+        </div>
+
+        <div className="divide-y divide-gray-50 flex-1">
+          {loading ? <div className="py-12 text-center text-sm text-gray-400">Loading…</div> : payments.length === 0 ? <div className="py-12 text-center text-sm text-gray-400">No payment slips found</div> : payments.map((p) => (
+            <div key={p.id} className="grid grid-cols-12 px-4 py-3 items-center text-sm hover:bg-gray-50/50 transition-colors">
+              <div className="col-span-2 flex flex-col items-start min-w-0 pr-2">
+                <span className="font-bold text-gray-800">{p.paid_at ? format(new Date(p.paid_at), 'd/M/yyyy') : '--'}</span>
+                <span className="text-xs text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 mt-0.5 rounded">{p.receipt_no || '--'}</span>
+              </div>
+              <div className="col-span-2 min-w-0 pr-2">
+                <p className="font-bold text-gray-800 truncate">{p.patient_name || 'Patient'}</p>
+                <p className="text-[10px] text-gray-500 font-mono truncate">{p.patient_uhid || '--'}</p>
+                {p.collected_by_name && <p className="text-[10px] text-gray-400 font-bold mt-0.5">By: {p.collected_by_name}</p>}
+              </div>
+              <div className="col-span-2 min-w-0 pr-2">
+                <span className="text-gray-600 truncate block font-semibold">{p.invoice_no || '--'}</span>
+                <span className="text-[10px] text-indigo-600 font-bold uppercase">{p.payment_mode || 'cash'}</span>
+              </div>
+              <div className="col-span-2 flex flex-col items-center gap-1">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${statusColors[p.status] || 'bg-gray-100 text-gray-800'}`}>
+                  {p.status}
+                </span>
+                <span className="text-xs font-bold text-gray-600 border border-gray-200 px-1.5 rounded bg-gray-50 flex items-center">
+                  <IndianRupee size={10} className="mr-0.5" /> {p.amount || '0'}
+                </span>
+              </div>
+              <div className="col-span-2 min-w-0 pr-2">
+                <p className="text-xs text-gray-500 truncate">{p.transaction_reference || '--'}</p>
+              </div>
+              <div className="col-span-2 flex flex-row gap-2 items-center justify-end">
+                <button onClick={() => setViewPayment(p)} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group">
+                  <Eye size={12} className="group-hover:scale-110 transition-transform" /> View
+                </button>
+                <button onClick={() => setEditingPayment({ ...p, paid_at: toDateTimeInputValue(p.paid_at) })} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group">
+                  <Edit2 size={12} className="group-hover:scale-110 transition-transform" /> Edit
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between px-1 py-1">
+        <span className="text-sm text-gray-400 font-medium">
+          {total === 0 ? 'No slips found' : `Showing ${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, total)} of ${total}`}
+        </span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+            className="px-4 py-1.5 rounded-full text-sm font-semibold bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            Previous
+          </button>
+          <span className="text-sm text-gray-500 font-medium px-1">
+            Page {page + 1} of {totalPages || 1}
+          </span>
+          <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1 || totalPages === 0}
+            className="px-4 py-1.5 rounded-full text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            Next
+          </button>
+        </div>
+      </div>
+
+      {editingPayment && (
+        <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <form onSubmit={handleSaveEdit} className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-full">
+            <div className="bg-emerald-600 px-4 py-3 flex items-center justify-between pointer-events-none">
+              <h2 className="text-white font-bold pointer-events-auto">Edit Payment Slip</h2>
+              <button type="button" onClick={() => setEditingPayment(null)} className="text-white/80 hover:text-white pointer-events-auto"><X size={18} /></button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Paid At</label>
+                <input type="datetime-local" value={editingPayment.paid_at || ''} onChange={e => setEditingPayment({ ...editingPayment, paid_at: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Amount</label>
+                  <input type="number" step="0.01" value={editingPayment.amount || ''} onChange={e => setEditingPayment({ ...editingPayment, amount: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Payment Mode</label>
+                  <select value={editingPayment.payment_mode || 'cash'} onChange={e => setEditingPayment({ ...editingPayment, payment_mode: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
+                    <option value="cash">Cash</option>
+                    <option value="upi">UPI</option>
+                    <option value="card">Card</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Transaction Reference</label>
+                <input type="text" value={editingPayment.transaction_reference || ''} onChange={e => setEditingPayment({ ...editingPayment, transaction_reference: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Receipt Number</label>
+                <input type="text" value={editingPayment.receipt_no || ''} onChange={e => setEditingPayment({ ...editingPayment, receipt_no: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Status</label>
+                <select value={editingPayment.status || 'success'} onChange={e => setEditingPayment({ ...editingPayment, status: e.target.value })} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
+                  <option value="success">Success</option>
+                  <option value="pending">Pending</option>
+                  <option value="failed">Failed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </div>
+            </div>
+            <div className="p-4 border-t border-gray-100 flex gap-2 justify-end bg-gray-50 mt-auto shrink-0">
+              <button type="button" onClick={() => setEditingPayment(null)} className="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+              <button type="submit" className="px-4 py-2 rounded-xl text-sm font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">Save Changes</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {viewPayment && (
+        <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col">
+            <div className="bg-gray-800 px-5 py-4 flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center font-black text-lg shadow-inner">
+                  <Receipt size={18} />
+                </div>
+                <div>
+                  <h2 className="font-bold text-lg leading-tight">{viewPayment.patient_name || 'Payment Slip'}</h2>
+                  <p className="text-xs text-gray-400 font-mono tracking-tighter">{viewPayment.patient_uhid || 'No UHID'}</p>
+                </div>
+              </div>
+              <button onClick={() => setViewPayment(null)} className="text-gray-400 hover:text-white transition-colors p-1.5 hover:bg-white/10 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 grid grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Invoice No</p>
+                  <p className="text-sm font-bold text-gray-800">{viewPayment.invoice_no || '--'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Receipt No</p>
+                  <p className="text-sm font-bold text-gray-800">{viewPayment.receipt_no || '--'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Collected By</p>
+                  <p className="text-sm font-bold text-gray-800">{viewPayment.collected_by_name || '--'}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                  <p className="text-[10px] font-black text-emerald-600/70 uppercase tracking-widest mb-1">Amount</p>
+                  <p className="text-2xl font-black text-emerald-700">₹{Number(viewPayment.amount || 0).toLocaleString('en-IN')}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Payment Mode</p>
+                  <p className="text-sm font-bold text-gray-800 uppercase">{viewPayment.payment_mode || '--'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Paid At</p>
+                  <p className="text-sm font-bold text-gray-800">{viewPayment.paid_at ? format(new Date(viewPayment.paid_at), 'd/M/yyyy (HH:mm)') : '--'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Transaction Reference</p>
+                  <p className="text-sm font-bold text-gray-800 break-all">{viewPayment.transaction_reference || '--'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Status</p>
+                  <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${statusColors[viewPayment.status] || 'bg-gray-100 text-gray-800'}`}>
+                    {viewPayment.status || '--'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-gray-100 bg-gray-50 flex gap-4">
+              <button onClick={() => setViewPayment(null)}
+                className="flex-1 py-3 px-4 rounded-xl font-black text-xs text-gray-500 hover:bg-white hover:text-gray-800 hover:shadow-md transition-all flex items-center justify-center gap-2 uppercase tracking-[0.2em] border border-transparent hover:border-gray-200 active:scale-95 group">
+                <X size={16} className="group-hover:rotate-90 transition-transform duration-300" /> Close
+              </button>
+              <button onClick={() => printPaymentSlip(viewPayment)}
+                className="flex-1 py-3 px-4 bg-indigo-600 text-white rounded-xl font-black text-xs hover:bg-indigo-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
+                <Printer size={16} className="group-hover:scale-110 transition-transform" /> Print Slip
+              </button>
+              <button onClick={() => { setEditingPayment({ ...viewPayment, paid_at: toDateTimeInputValue(viewPayment.paid_at) }); setViewPayment(null) }}
+                className="flex-[1.5] py-3 px-4 bg-emerald-600 text-white rounded-xl font-black text-xs hover:bg-emerald-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
+                <Edit2 size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" /> Edit Slip Details
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -4188,7 +6319,7 @@ function PrintMiniReceipt({ admission, data, type, onClose }) {
   const label     = type === 'advance' ? 'ADVANCE PAYMENT RECEIPT' : 'PAYMENT RECEIPT'
   const modeLabel = { cash: 'Cash', upi: 'UPI / Online Transfer', credit: 'Credit / Due', other: 'Other' }
   const isPaid    = data.mode !== 'credit'
-  const now       = format(new Date(), 'd/M/yyyy hh:mm a')
+  const now       = format(new Date(), 'd/M/yyyy (HH:mm)')
 
   const content = (
     // The outer div covers the full viewport so during printing nothing else bleeds in
@@ -4223,7 +6354,7 @@ function PrintMiniReceipt({ admission, data, type, onClose }) {
               ['Patient Name', (admission.patient_name || '—').toUpperCase()],
               ['Ward / Room',  `${admission.ward_name || '—'} / ${admission.room_name || '—'}`],
               ['Bed No.',      admission.bed_code || '—'],
-              ['Admission Date', admission.admission_date || '—'],
+              ['Admission Date', admission.admission_date ? `${format(new Date(admission.admission_date), 'd/M/yyyy')} (${format(new Date(admission.created_at || Date.now()), 'HH:mm')})` : '—'],
               ['Receipt Date', now],
               data.invoice_no ? ['Reference No.', data.invoice_no] : null,
             ].filter(Boolean).map(([k, v]) => (
@@ -4312,7 +6443,7 @@ function PrintMiniReceipt({ admission, data, type, onClose }) {
 }
 
 // ─── IPD Ledger Modal ────────────────────────────────────────────────────────
-function AdmissionLedgerModal({ admission, onClose }) {
+function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDischargeInitiated }) {
   const [ledger, setLedger]         = useState(null)
   const [loading, setLoading]       = useState(true)
   const [tab, setTab]               = useState('advance')
@@ -4345,6 +6476,13 @@ function AdmissionLedgerModal({ admission, onClose }) {
   const [editingLedgerIsDiscount, setEditingLedgerIsDiscount] = useState(false)
 
   useEffect(() => { fetchLedger() }, [admission.id])
+
+  useEffect(() => {
+    if (autoDischarge && ledger && !loading && !journey) {
+      handleInitiateDischarge();
+      if (onDischargeInitiated) onDischargeInitiated();
+    }
+  }, [autoDischarge, ledger, loading, journey])
 
   async function fetchLedger() {
     setLoading(true)
@@ -4693,7 +6831,7 @@ function AdmissionLedgerModal({ admission, onClose }) {
             </div>
             <div>
               <h3 className="text-white font-bold text-lg leading-tight">{admission.patient_name || '--'}</h3>
-              <p className="text-blue-100 text-xs">IPD Ledger · {admission.ward_name} · Bed {admission.bed_code} · Adm: {admission.admission_date}</p>
+              <p className="text-blue-100 text-xs text-blue-100/90 font-medium">IPD Ledger · {admission.ward_name} · Bed {admission.bed_code} · Adm: {admission.admission_date ? `${format(new Date(admission.admission_date), 'd/M/yyyy')} (${format(new Date(admission.created_at || Date.now()), 'HH:mm')})` : '--'}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -5010,7 +7148,7 @@ function PrintIpdLedger({ admission, ledger, onClose }) {
             <p className="text-gray-600 font-medium">Inpatient Bill & Ledger Statement</p>
           </div>
           <div className="text-right">
-            <p className="font-bold">Date: {format(new Date(), 'd/M/yyyy HH:mm')}</p>
+            <p className="font-bold">Date: {format(new Date(), 'd/M/yyyy (HH:mm)')}</p>
             <p className="font-mono text-xs text-gray-500 mt-1">Ref: ADM-{admission.id.split('-')[0].toUpperCase()}</p>
           </div>
         </div>
@@ -5018,7 +7156,7 @@ function PrintIpdLedger({ admission, ledger, onClose }) {
         {/* Patient Details */}
         <div className="border border-gray-300 p-4 mb-6 grid grid-cols-2 gap-x-8 gap-y-2 rounded-lg">
           <div><span className="text-gray-500 w-24 inline-block">Patient Name:</span> <span className="font-bold uppercase">{admission.patient_name || '--'}</span></div>
-          <div><span className="text-gray-500 w-24 inline-block">Admission Date:</span> <span className="font-medium">{admission.admission_date ? format(new Date(admission.admission_date), 'd/M/yyyy') : '-'}</span></div>
+          <div><span className="text-gray-500 w-24 inline-block">Admission Date:</span> <span className="font-medium">{admission.admission_date ? `${format(new Date(admission.admission_date), 'd/M/yyyy')} (${format(new Date(admission.created_at || Date.now()), 'HH:mm')})` : '-'}</span></div>
           <div><span className="text-gray-500 w-24 inline-block">Ward/Room:</span> <span className="font-medium">{admission.ward_name} / {admission.room_name}</span></div>
           <div><span className="text-gray-500 w-24 inline-block">Bed:</span> <span className="font-medium">{admission.bed_code}</span></div>
           <div className="col-span-2"><span className="text-gray-500 w-24 inline-block">Diagnosis:</span> <span className="font-medium">{admission.admission_diagnosis || 'N/A'}</span></div>
@@ -5165,8 +7303,10 @@ export default function ReceptionistPortal() {
         <div className="flex items-center gap-3">
           <Hospital size={20} />
           <div>
-            <h1 className="font-bold text-sm leading-tight">Receptionist Portal</h1>
-            <p className="text-xs opacity-75">{user.email || 'Reception Desk'}</p>
+            <h1 className="font-bold text-sm leading-tight">
+              {user.first_name ? `${user.first_name} ${user.last_name || ''}` : 'Receptionist Portal'}
+            </h1>
+            <p className="text-xs opacity-75">{user.role?.replace(/_/g, ' ') || user.email || 'Reception Desk'}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -5278,6 +7418,7 @@ export default function ReceptionistPortal() {
             {section === 'opd_history' && <OpdSlipsSection />}
             {section === 'register' && <RegisterPatientSection />}
             {section === 'payment_slip' && <PaymentSlipSection />}
+            {section === 'payment_slip_list' && <PaymentSlipsListSection />}
             {section === 'discharge' && <DischargeSection />}
             {section === 'attendance' && <StaffAttendanceSection />}
             {section === 'opd_template' && (

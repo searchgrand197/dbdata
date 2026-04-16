@@ -227,7 +227,7 @@ const BED_STATUS_META = {
 }
 
 // ─── BedSelector Modal ────────────────────────────────────────────────────────
-export default function BedSelector({ onSelect, onClose }) {
+export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' }) {
   const [floors, setFloors] = useState([])
   const [loading, setLoading] = useState(true)
   const [floorIdx, setFloorIdx] = useState(0)
@@ -287,7 +287,7 @@ export default function BedSelector({ onSelect, onClose }) {
   const floorAvail = floor?.available_beds || 0
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-2" onMouseLeave={() => setTooltip(null)}>
+    <div className={`fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center ${zIndexClass} p-2`} onMouseLeave={() => setTooltip(null)}>
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[96vh] flex flex-col overflow-hidden">
 
         {/* Header */}

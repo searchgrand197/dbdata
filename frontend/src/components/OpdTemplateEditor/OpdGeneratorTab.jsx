@@ -108,7 +108,13 @@ export default function App() {
             cursor: 'default',
           }}
         >
-          {values[name] ?? ''}
+          {(() => {
+            const val = values[name] ?? ''
+            if (name.toLowerCase().includes('address') && val.length > 35) {
+              return val.substring(0, 32) + '...'
+            }
+            return val
+          })()}
         </div>,
       )
     })

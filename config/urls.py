@@ -53,6 +53,7 @@ urlpatterns = [
     # API v1 — single router so GET /api/v1/ lists all ViewSet roots (see config.api_v1_router_urls)
     path("api/v1/", include("apps.accounts.api_urls")),
     path("api/v1/", include("apps.roles_permissions.api_urls")),
+    path("api/v1/", include("apps.payments.api_urls")),
     path("api/v1/", include("config.api_v1_router_urls")),
     path("api/v1/", include("apps.prescriptions.api_urls")),
     path("api/v1/", include("apps.pharmacy.api_urls")),

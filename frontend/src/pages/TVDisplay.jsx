@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import api from '../api'
-import { Stethoscope } from 'lucide-react'
+import { Clock3, Stethoscope, UserRound } from 'lucide-react'
 import { getRoomsConfig, DEFAULT_ROOMS, getTvGroupsConfig } from '../utils/rooms'
 
 function getRoomMap() {
@@ -56,13 +56,27 @@ export default function TVDisplay() {
       ])
       const visits = v.data?.data || v.data?.results || v.data
       const docs = d.data?.data || d.data?.results || d.data || []
+      const safeDocs = Array.isArray(docs) ? docs : []
       const allRooms = Object.values(roomMap)
-      const withRooms = (Array.isArray(docs) ? docs : []).map((doc, idx) => ({
-        ...doc,
-        room_code: allRooms[idx % allRooms.length]?.code,
-      }))
+      const normalizeId = (value) => (value == null ? '' : String(value))
+      const roomCodeByDoctorUser = new Map(
+        allRooms
+          .filter((rm) => rm?.code)
+          .map((rm) => [normalizeId(rm.doctor_user), rm.code])
+          .filter(([doctorUser]) => doctorUser),
+      )
+
+      const withRooms = safeDocs.map((doc, idx) => {
+        const doctorUser = normalizeId(doc.user || doc.id)
+        const assignedCode = roomCodeByDoctorUser.get(doctorUser)
+        return {
+          ...doc,
+          room_code: assignedCode || allRooms[idx % allRooms.length]?.code,
+        }
+      })
       const rows = (Array.isArray(visits) ? visits : []).map(vis => {
-        const doc = withRooms.find(x => x.user === vis.doctor_user)
+        const doctorUser = normalizeId(vis.doctor_user)
+        const doc = withRooms.find(x => normalizeId(x.user || x.id) === doctorUser)
         return { ...vis, room_code: vis.room_code || doc?.room_code }
       })
       const renderRooms = selectedRooms.length ? selectedRooms : [room]
@@ -74,8 +88,11 @@ export default function TVDisplay() {
         const queue = roomRows
           .filter(v => v.status === 'waiting')
           .sort((a, b) => (a.token_number || 0) - (b.token_number || 0))
-          .slice(0, 6)
-        return { room: rm, current, queue }
+        const slabs = [
+          ...(current ? [{ ...current, __serving: true }] : []),
+          ...queue.map(q => ({ ...q, __serving: false })),
+        ].slice(0, 10)
+        return { room: rm, current, queue, slabs }
       })
       setBoardData(perRoom)
     } catch {
@@ -83,63 +100,64 @@ export default function TVDisplay() {
     }
   }
 
+  const renderData = boardData.length ? boardData : [{ room, current: null, queue: [] }]
+  const renderPanels = renderData.slice(0, 2)
+  const isSinglePanel = renderPanels.length === 1
+  const servingTone = ['from-emerald-500 via-green-500 to-emerald-600', 'from-rose-500 via-red-500 to-rose-600']
+
   return (
-    <div className="min-h-screen bg-white text-gray-900">
-      {/* Header */}
-      <div className="px-8 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">{roomTitle}</h1>
+    <div className="h-screen bg-[#f5f7fb] text-slate-900 overflow-hidden">
+      <header className="h-16 px-6 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
+        <h1 className="text-3xl font-black tracking-tight">{roomTitle}</h1>
         <div className="text-right">
-          <p className="text-3xl font-black tabular-nums">{format(time, 'HH:mm')}</p>
-          <p className="text-sm text-gray-500">{format(time, 'dd MMM yyyy')}</p>
+          <p className="text-4xl font-black tabular-nums leading-none">{format(time, 'HH:mm')}</p>
+          <p className="text-xs text-slate-500 font-semibold">{format(time, 'dd MMM yyyy')}</p>
         </div>
-      </div>
+      </header>
 
-      {/* Split board: one doctor/room per column */}
-      <div className={`grid gap-6 p-8 ${boardData.length <= 1 ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
-        {(boardData.length ? boardData : [{ room, current: null, queue: [] }]).map(({ room: rm, current, queue }) => (
-          <div key={rm.code} className="rounded-2xl border border-gray-200 p-6 bg-white min-h-[480px]">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
-                <Stethoscope className="text-blue-700" size={24} />
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-gray-500">Doctor</p>
-                <p className="font-semibold">{rm.label}</p>
-              </div>
-            </div>
+      <main className={`h-[calc(100vh-64px)] ${isSinglePanel ? 'grid grid-cols-1' : 'grid grid-cols-2'}`}>
+        {renderPanels.map(({ room: rm, current, queue = [] }, panelIndex) => {
+          const circles = queue.slice(0, isSinglePanel ? 20 : 10)
 
-            <p className="text-sm text-gray-500 mb-2">Current Token</p>
-            {current ? (
-              <>
-                <div className="px-6 py-4 rounded-2xl bg-orange-500 text-white text-5xl font-black shadow-lg inline-block">
-                  {rm.prefix}{current.token_number}
+          return (
+            <section
+              key={rm.code}
+              className={`relative px-6 ${isSinglePanel ? 'py-6' : 'py-5'} ${panelIndex === 0 && !isSinglePanel ? 'border-r-4 border-slate-900' : ''}`}
+            >
+              <div className={`flex items-center ${isSinglePanel ? 'justify-center gap-5 pb-4' : 'justify-between pb-4'} border-b border-slate-700`}>
+                <h2 className={`${isSinglePanel ? 'text-5xl text-center' : 'text-5xl'} font-black tracking-tight leading-tight`}>{rm.label}</h2>
+                <div className={`${isSinglePanel ? 'w-20 h-20' : 'w-20 h-20'} rounded-full border-2 border-amber-300 bg-amber-50 flex items-center justify-center shrink-0 ${isSinglePanel ? '' : 'ml-4'}`}>
+                  <UserRound size={44} className="text-amber-500" />
                 </div>
-                <p className="mt-3 text-base font-semibold">{current.patient_name || 'Patient'}</p>
-              </>
-            ) : (
-              <div className="px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 text-gray-400 font-semibold inline-block">
-                No active token
               </div>
-            )}
 
-            <div className="mt-6">
-              <h2 className="text-base font-bold mb-3">Queue</h2>
-              {queue.length === 0 ? (
-                <p className="text-gray-400">No waiting tokens</p>
-              ) : (
-                <div className="space-y-2">
-                  {queue.map((v) => (
-                    <div key={v.id} className="flex items-center justify-between rounded-xl border border-orange-200 bg-orange-50 px-4 py-2.5">
-                      <span className="text-sm text-gray-600">Token</span>
-                      <span className="text-2xl font-black text-orange-500">{rm.prefix}{v.token_number}</span>
-                    </div>
-                  ))}
+              <div className={`flex items-center justify-center ${isSinglePanel ? 'mt-7 gap-10' : 'mt-4 gap-10'}`}>
+                <div className={`${isSinglePanel ? 'w-44 h-44' : 'w-40 h-40'} rounded-full bg-gradient-to-br ${servingTone[panelIndex % servingTone.length]} shadow-[inset_0_2px_10px_rgba(255,255,255,0.35),0_8px_22px_rgba(0,0,0,0.14)] flex items-center justify-center shrink-0`}>
+                  <span className={`${isSinglePanel ? 'text-7xl' : 'text-7xl'} font-black text-white leading-none`}>
+                    {current ? `${rm.prefix}${current.token_number}` : '--'}
+                  </span>
                 </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+                <div className={`${isSinglePanel ? 'text-5xl max-w-[440px]' : 'text-5xl max-w-[260px]'} font-bold text-slate-900 leading-tight truncate`}>
+                  {current?.patient_name || 'Waiting'}
+                </div>
+              </div>
+
+              <div className={`${isSinglePanel ? 'mt-9 max-w-[1540px] mx-auto grid grid-cols-7 gap-2.5' : 'mt-12 grid grid-cols-5 gap-4'}`}>
+                {circles.map((v, idx) => (
+                  <div
+                    key={`${rm.code}-dot-${idx}`}
+                    className={`${isSinglePanel ? 'w-32 h-32' : 'w-28 h-28'} mx-auto rounded-full bg-gradient-to-br from-blue-500 to-blue-700 shadow-[inset_0_2px_10px_rgba(255,255,255,0.25),0_10px_16px_rgba(37,99,235,0.3)] flex items-center justify-center`}
+                  >
+                    <span className={`${isSinglePanel ? 'text-[3.1rem]' : 'text-5xl'} font-black text-white leading-none tracking-tight`}>
+                      {rm.prefix}{v.token_number}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )
+        })}
+      </main>
     </div>
   )
 }
