@@ -61,3 +61,33 @@ class RefundLog(TimeStampedModel, UUIDPrimaryKeyModel):
     def __str__(self) -> str:
         return f"Refund {self.invoice.invoice_no} - {self.amount}"
 
+
+class CashHandover(TimeStampedModel, UUIDPrimaryKeyModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+
+    hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="handovers")
+    from_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="handovers_sent"
+    )
+    to_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="handovers_received"
+    )
+
+    # System calculated totals at the time of creation
+    system_cash_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    system_upi_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    system_other_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+
+    # Declared by the person handing over
+    declared_cash_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    def __str__(self) -> str:
+        return f"Handover from {self.from_user.username} to {self.to_user.username} ({self.status})"
+

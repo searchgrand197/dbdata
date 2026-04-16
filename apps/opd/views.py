@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework import permissions, status, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -47,16 +48,19 @@ class OPDVisitViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset().select_related(
-            'patient', 'patient__address', 'patient__guardian'
+            'patient', 'patient__address', 'patient__guardian', 'doctor_user', 'created_by'
         )
         user = self.request.user
-        if user.is_superuser:
-            return qs
+        if not user.hospital_id:
+            return qs.none()
         return qs.filter(hospital_id=user.hospital_id)
 
     def perform_create(self, serializer):
         patient: Patient = serializer.validated_data["patient"]
-        doctor_user = serializer.validated_data.get("doctor_user")
+        if not self.request.user.hospital_id:
+            raise ValidationError({"hospital": ["User is not linked to a hospital."]})
+        if patient.hospital_id != self.request.user.hospital_id:
+            raise ValidationError({"patient": ["Patient does not belong to your hospital."]})
         visit_date = serializer.validated_data.get("visit_date")
 
         # Auto-assign queue number per hospital + visit_date (global daily counter, resets each day).
@@ -66,7 +70,11 @@ class OPDVisitViewSet(viewsets.ModelViewSet):
             is_deleted=False,
         )
         next_queue = (qs.order_by("-queue_number").values_list("queue_number", flat=True).first() or 0) + 1
-        visit = serializer.save(hospital_id=patient.hospital_id, queue_number=next_queue)
+        visit = serializer.save(
+            hospital_id=patient.hospital_id, 
+            queue_number=next_queue,
+            created_by=self.request.user
+        )
         create_audit_log(
             request=self.request,
             hospital=visit.hospital,
@@ -126,10 +134,7 @@ def follow_up_alerts(request):
     """
     hospital = getattr(request.user, 'hospital', None)
     if not hospital:
-        if request.user.is_superuser:
-            hospital = Hospital.objects.first()
-        else:
-            return Response([])
+        return Response([])
 
     today = date.today()
     tomorrow = today + timedelta(days=1)

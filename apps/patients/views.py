@@ -135,6 +135,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         address_line1 = data.get("address_line1", "")
         city          = data.get("city", "")
         state         = data.get("state", "")
+        guardian_name = data.get("guardian_name", "")
         age           = data.get("age")
 
         # Convert age → approximate dob if dob not provided
@@ -153,6 +154,14 @@ class PatientViewSet(viewsets.ModelViewSet):
             PatientAddress.objects.update_or_create(
                 patient=patient,
                 defaults={"line1": address_line1, "city": city, "state": state},
+            )
+
+        if guardian_name:
+            from apps.patients.models import PatientGuardian
+
+            PatientGuardian.objects.update_or_create(
+                patient=patient,
+                defaults={"name": guardian_name},
             )
 
         create_audit_log(

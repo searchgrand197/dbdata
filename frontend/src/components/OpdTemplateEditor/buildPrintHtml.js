@@ -35,7 +35,11 @@ export function buildPrintHtml(layout, values, withBackground) {
     const top   = (((y + printOffsetY) / CANVAS_H) * 100).toFixed(4)
     const size  = cfg.size || 13
     const fs    = ((size / 600) * 100).toFixed(4)
-    const text  = esc(values[name] ?? '')
+    let val = values[name] ?? ''
+    if (name.toLowerCase().includes('address') && val.length > 35) {
+      val = val.substring(0, 32) + '...'
+    }
+    const text  = esc(val)
     return '<div class="field-box" style="left:' + left + '%;top:' + top + '%;font-size:' + fs + 'cqw;">' + text + '</div>'
   }).join('\n')
 

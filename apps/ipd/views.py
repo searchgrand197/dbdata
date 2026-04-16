@@ -35,7 +35,7 @@ def _release_bed(bed_code: str, hospital_id):
 class IPDAdmissionViewSet(viewsets.ModelViewSet):
     queryset = IPDAdmission.objects.all()
     filter_backends = (SearchFilter,)
-    search_fields = ("patient__uhid", "admission_diagnosis", "admission_notes", "ward_name", "room_name", "bed_code")
+    search_fields = ("patient__uhid", "admission_diagnosis", "admission_notes", "ward_name", "department", "room_name", "bed_code")
 
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
 
@@ -201,6 +201,7 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             "assigned_doctor": request.data.get("assigned_doctor"),
             "assigned_nurse": request.data.get("assigned_nurse"),
             "ward_name": request.data.get("ward_name", ""),
+            "department": request.data.get("department", ""),
             "room_name": request.data.get("room_name", ""),
             "bed_code": request.data.get("bed_code", ""),
             "admission_diagnosis": request.data.get("admission_diagnosis") or opd_visit.diagnosis,

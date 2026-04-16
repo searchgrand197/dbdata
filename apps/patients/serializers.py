@@ -3,7 +3,7 @@ from datetime import date
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
-from apps.patients.models import Patient, PatientAddress
+from apps.patients.models import Patient, PatientAddress, PatientGuardian
 
 
 class PatientSerializer(serializers.ModelSerializer):
@@ -12,6 +12,7 @@ class PatientSerializer(serializers.ModelSerializer):
     address_line1 = serializers.SerializerMethodField()
     city = serializers.SerializerMethodField()
     state = serializers.SerializerMethodField()
+    guardian_name = serializers.SerializerMethodField()
     age = serializers.SerializerMethodField()
 
     class Meta:
@@ -36,6 +37,7 @@ class PatientSerializer(serializers.ModelSerializer):
             "address_line1",
             "city",
             "state",
+            "guardian_name",
             "created_at",
             "updated_at",
         ]
@@ -58,6 +60,12 @@ class PatientSerializer(serializers.ModelSerializer):
         a = self._addr(obj)
         return a.state if a else ""
 
+    def get_guardian_name(self, obj):
+        try:
+            return obj.guardian.name
+        except ObjectDoesNotExist:
+            return ""
+
     def get_age(self, obj):
         if not obj.dob:
             return None
@@ -74,6 +82,7 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
     address_line1 = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
     city          = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
     state         = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
+    guardian_name = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
     age           = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     # last_name is optional — single-name patients are valid
     last_name = serializers.CharField(required=False, allow_blank=True, default="")
@@ -103,6 +112,7 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
             "address_line1",
             "city",
             "state",
+            "guardian_name",
             "link_with_existing_phone_patients",
         ]
 
@@ -123,10 +133,11 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
         address_line1 = validated_data.pop("address_line1", None)
         city = validated_data.pop("city", None)
         state = validated_data.pop("state", None)
-        return age, address_line1, city, state
+        guardian_name = validated_data.pop("guardian_name", None)
+        return age, address_line1, city, state, guardian_name
 
     def create(self, validated_data):
-        age, al, ct, st = self._pop_write_only_extras(validated_data)
+        age, al, ct, st, gn = self._pop_write_only_extras(validated_data)
         link = validated_data.pop("link_with_existing_phone_patients", False)
         patient = super().create(validated_data)
 
@@ -147,6 +158,9 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
                 state=st or "",
             )
 
+        if gn:
+            PatientGuardian.objects.create(patient=patient, name=gn)
+
         if link:
             from apps.patients.services.phone_family import ensure_family_group_for_shared_phone
 
@@ -156,7 +170,7 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         validated_data.pop("link_with_existing_phone_patients", None)
-        age, al, ct, st = self._pop_write_only_extras(validated_data)
+        age, al, ct, st, gn = self._pop_write_only_extras(validated_data)
         if age is not None:
             try:
                 validated_data["dob"] = date(date.today().year - int(age), 1, 1)
@@ -175,5 +189,11 @@ class PatientCreateUpdateSerializer(serializers.ModelSerializer):
             if st is not None:
                 addr.state = st
             addr.save()
+
+        if gn is not None:
+            g, _ = PatientGuardian.objects.get_or_create(patient=inst, defaults={"name": ""})
+            g.name = gn
+            g.save()
+
         return inst
 

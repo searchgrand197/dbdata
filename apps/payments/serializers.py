@@ -7,6 +7,8 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
     hospital_id = serializers.UUIDField(read_only=True)
     invoice_no = serializers.CharField(source="invoice.invoice_no", read_only=True)
     patient_uhid = serializers.CharField(source="invoice.patient.uhid", read_only=True)
+    patient_name = serializers.SerializerMethodField()
+    collected_by_name = serializers.CharField(source="collected_by.full_name", read_only=True)
 
     class Meta:
         model = PaymentTransaction
@@ -15,6 +17,7 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
             "hospital_id",
             "invoice",
             "invoice_no",
+            "patient_name",
             "patient_uhid",
             "payment_mode",
             "amount",
@@ -23,9 +26,16 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
             "status",
             "paid_at",
             "collected_by",
+            "collected_by_name",
             "created_at",
             "updated_at",
         ]
+
+    def get_patient_name(self, obj):
+        patient = getattr(getattr(obj, "invoice", None), "patient", None)
+        if not patient:
+            return ""
+        return f"{patient.first_name} {patient.last_name}".strip() or patient.uhid
 
 
 class PaymentTransactionCreateSerializer(serializers.ModelSerializer):

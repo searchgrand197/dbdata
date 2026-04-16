@@ -18,6 +18,7 @@ class OPDVisitSerializer(serializers.ModelSerializer):
     room_code = serializers.SerializerMethodField()
     doctor_user_email = serializers.EmailField(source="doctor_user.email", read_only=True)
     doctor_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
     hospital_id = serializers.UUIDField(read_only=True)
 
     class Meta:
@@ -55,6 +56,8 @@ class OPDVisitSerializer(serializers.ModelSerializer):
             "status",
             "amount",
             "payment_mode",
+            "created_by",
+            "created_by_name",
             "created_at",
             "updated_at",
         ]
@@ -114,6 +117,14 @@ class OPDVisitSerializer(serializers.ModelSerializer):
         last = getattr(obj.doctor_user, "last_name", "") or ""
         name = f"{first} {last}".strip()
         return name or obj.doctor_user.email
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return ""
+        first = getattr(obj.created_by, "first_name", "") or ""
+        last = getattr(obj.created_by, "last_name", "") or ""
+        name = f"{first} {last}".strip()
+        return name or obj.created_by.email
 
 
 class OPDVisitCreateUpdateSerializer(serializers.ModelSerializer):
