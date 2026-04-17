@@ -50,6 +50,9 @@ function buildInvoiceHtml({ invoice, outlet }) {
   const sgst = Number(invoice.sgst || 0)
   const tax = cgst + sgst
   const grandTotal = Number(invoice.grand_total || 0)
+  const paidAmount = Number(invoice.paid_amount || 0)
+  const dueAmount = Math.max(0, Number(invoice.due_amount ?? grandTotal - paidAmount))
+  const paymentMethod = String(invoice.payment_method || 'cash').toUpperCase()
   const items = invoice.items || []
 
   const biz = outlet || {}
@@ -163,6 +166,7 @@ function buildInvoiceHtml({ invoice, outlet }) {
         <div><strong>Patient Address :</strong> ${invoice.patient_details?.address || '—'}</div>
         <div><strong>UHID No. :</strong> ${invoice.patient_details?.uhid || '—'}</div>
         <div><strong>Dr. Name :</strong> ${invoice.referred_by || '—'}</div>
+        <div><strong>Payment :</strong> ${paymentMethod}</div>
         ${showGst ? '<div><strong>GST :</strong></div>' : ''}
         <div style="display:flex;justify-content:space-between;margin-top:4px;border-top:1px solid #000;padding-top:4px">
           <span><strong>Invoice No. : ${invoice.invoice_no || ''}</strong></span>
@@ -221,6 +225,12 @@ function buildInvoiceHtml({ invoice, outlet }) {
           <span>TOTAL DIS</span><span>0.00</span>
         </div>
         ${gstTotalRows}
+        <div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #ccc">
+          <span>PAID</span><span>${paidAmount.toFixed(2)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #ccc">
+          <span>DUE</span><span>${dueAmount.toFixed(2)}</span>
+        </div>
         <div style="display:flex;justify-content:space-between;padding:6px 8px;background:#000;color:#fff;font-weight:bold;font-size:10px">
           <span>GRAND TOTAL</span><span>${grandTotal.toFixed(2)}</span>
         </div>
@@ -265,6 +275,9 @@ export default function PharmacyInvoicePrint({ invoice, outlet, onClose }) {
   const sgst = Number(invoice.sgst || 0)
   const tax = cgst + sgst
   const grandTotal = Number(invoice.grand_total || 0)
+  const paidAmount = Number(invoice.paid_amount || 0)
+  const dueAmount = Math.max(0, Number(invoice.due_amount ?? grandTotal - paidAmount))
+  const paymentMethod = String(invoice.payment_method || 'cash').toUpperCase()
   const items = invoice.items || []
 
   const biz = outlet || {}
@@ -324,6 +337,7 @@ export default function PharmacyInvoicePrint({ invoice, outlet, onClose }) {
             <div><strong>Patient Address :</strong> {invoice.patient_details?.address || '—'}</div>
             <div><strong>UHID No. :</strong> {invoice.patient_details?.uhid || '—'}</div>
             <div><strong>Dr. Name :</strong> {invoice.referred_by || '—'}</div>
+            <div><strong>Payment :</strong> {paymentMethod}</div>
             {showGst ? <div><strong>GST :</strong></div> : null}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', borderTop: '1px solid #000', paddingTop: '4px' }}>
               <span><strong>Invoice No. : {invoice.invoice_no}</strong></span>
@@ -449,6 +463,12 @@ export default function PharmacyInvoicePrint({ invoice, outlet, onClose }) {
                 </div>
               </>
             ) : null}
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 8px', borderBottom: '1px solid #ccc' }}>
+              <span>PAID</span><span>{paidAmount.toFixed(2)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 8px', borderBottom: '1px solid #ccc' }}>
+              <span>DUE</span><span>{dueAmount.toFixed(2)}</span>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 8px', background: '#000', color: '#fff', fontWeight: 'bold', fontSize: '10px' }}>
               <span>GRAND TOTAL</span><span>{grandTotal.toFixed(2)}</span>
             </div>

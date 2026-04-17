@@ -857,40 +857,229 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
   )
 }
 
-function HistoryView({ invoices, setPrintingInvoice }) {
+function HistoryView({ invoices: _invoices, setPrintingInvoice }) {
+  const PAGE_SIZE = 15
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(0)
+  const [total, setTotal] = useState(0)
+  const [q, setQ] = useState('')
+  const [editInv, setEditInv] = useState(null)
+
+  const fetchRows = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data } = await api.get('/pharmacy/invoices/', {
+        params: { limit: PAGE_SIZE, offset: page * PAGE_SIZE, search: q || undefined },
+      })
+      setRows(data?.data || data?.results || [])
+      setTotal(Number(data?.count || data?.meta?.total || 0))
+    } catch {
+      toast.error('Failed to load sale register')
+      setRows([])
+      setTotal(0)
+    } finally {
+      setLoading(false)
+    }
+  }, [page, q])
+
+  useEffect(() => {
+    fetchRows()
+  }, [fetchRows])
+
   return (
-    <div className="h-full flex flex-col gap-2 overflow-hidden">
-      <h2 className="text-sm font-bold text-slate-900 shrink-0">Sale register</h2>
-      <div className="flex-1 bg-white border border-slate-200 rounded overflow-y-auto min-h-0">
+    <div className="h-full flex flex-col gap-3 overflow-hidden min-h-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 rounded-xl p-3">
+      <div className="flex items-center justify-between gap-2 shrink-0">
+        <h2 className="text-base font-bold text-slate-900">Sale register</h2>
+        <div className="relative w-full max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+          <input
+            value={q}
+            onChange={(e) => {
+              setPage(0)
+              setQ(e.target.value)
+            }}
+            placeholder="Search invoice / patient"
+            className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2 py-1.5 text-xs outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
+
+      <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-y-auto min-h-0 shadow-sm">
         <table className="w-full text-left text-[11px]">
-          <thead className="bg-slate-100 sticky top-0 z-10 text-[10px] font-bold text-slate-500 uppercase">
+          <thead className="bg-gradient-to-b from-slate-100 to-slate-50 sticky top-0 z-10 text-[10px] font-bold text-slate-500 uppercase">
             <tr>
               <th className="px-3 py-2">Invoice</th>
               <th className="px-3 py-2">Patient</th>
-              <th className="px-3 py-2">Tax</th>
+              <th className="px-3 py-2">Method</th>
+              <th className="px-3 py-2 text-right">Paid</th>
+              <th className="px-3 py-2 text-right">Due</th>
               <th className="px-3 py-2 text-right">Total</th>
+              <th className="px-3 py-2 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {invoices.map((inv) => (
-              <tr
-                key={inv.id}
-                className="hover:bg-slate-50 cursor-pointer"
-                onClick={() => setPrintingInvoice(inv)}
-              >
-                <td className="px-3 py-2 text-blue-700 font-mono text-[10px]">#{inv.invoice_no}</td>
-                <td className="px-3 py-2">
-                  <div className="font-medium">
-                    {inv.patient_details?.first_name} {inv.patient_details?.last_name}
-                  </div>
-                  <div className="text-[10px] text-slate-400">{safeFormat(inv.created_at, 'dd MMM yy HH:mm')}</div>
-                </td>
-                <td className="px-3 py-2">₹{(Number(inv.cgst) + Number(inv.sgst)).toFixed(2)}</td>
-                <td className="px-3 py-2 text-right font-semibold">₹{Number(inv.grand_total).toFixed(2)}</td>
-              </tr>
-            ))}
+            {loading ? (
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">No invoices found</td></tr>
+            ) : rows.map((inv) => {
+              const totalAmt = Number(inv.grand_total || 0)
+              const paidAmt = Number(inv.paid_amount || 0)
+              const dueAmt = Math.max(0, Number(inv.due_amount ?? totalAmt - paidAmt))
+              return (
+                <tr key={inv.id} className="hover:bg-indigo-50/30">
+                  <td className="px-3 py-2 text-blue-700 font-mono text-[10px]">#{inv.invoice_no}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium">
+                      {inv.patient_details?.first_name} {inv.patient_details?.last_name}
+                    </div>
+                    <div className="text-[10px] text-slate-400">{safeFormat(inv.created_at, 'dd MMM yy HH:mm')}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className="text-[10px] uppercase font-bold bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                      {inv.payment_method || 'cash'}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold text-emerald-700">₹{paidAmt.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-amber-700">₹{dueAmt.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">₹{totalAmt.toFixed(2)}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setPrintingInvoice(inv)}
+                        className="px-2 py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-[10px] font-semibold"
+                      >
+                        View
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditInv(inv)}
+                        className="px-2 py-1 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-[10px] font-semibold"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
+      </div>
+
+      <div className="shrink-0 flex items-center justify-between text-xs text-slate-600">
+        <span>
+          {total === 0 ? 'No records' : `Showing ${page * PAGE_SIZE + 1}-${Math.min((page + 1) * PAGE_SIZE, total)} of ${total}`}
+        </span>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            disabled={(page + 1) * PAGE_SIZE >= total}
+            onClick={() => setPage((p) => p + 1)}
+            className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
+      {editInv ? (
+        <EditSaleInvoiceModal
+          invoice={editInv}
+          onClose={() => setEditInv(null)}
+          onSaved={() => {
+            setEditInv(null)
+            fetchRows()
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function EditSaleInvoiceModal({ invoice, onClose, onSaved }) {
+  const [paymentMethod, setPaymentMethod] = useState(invoice.payment_method || 'cash')
+  const [paidAmount, setPaidAmount] = useState(String(invoice.paid_amount ?? invoice.grand_total ?? '0'))
+  const [remarks, setRemarks] = useState(invoice.remarks || '')
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    try {
+      await api.patch(`/pharmacy/invoices/${invoice.id}/`, {
+        payment_method: paymentMethod,
+        paid_amount: paymentMethod === 'credit' ? '0.00' : Number(paidAmount || 0).toFixed(2),
+        remarks,
+      })
+      toast.success('Invoice updated')
+      onSaved?.()
+    } catch {
+      toast.error('Failed to update invoice')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[400] bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-4 border border-slate-200">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-bold text-slate-900">Edit sale invoice</h3>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-800">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <label className="block">
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Payment method</span>
+            <select
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm bg-white"
+            >
+              {['cash', 'upi', 'other', 'bank_transfer', 'credit'].map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Paid amount</span>
+            <input
+              type="number"
+              value={paymentMethod === 'credit' ? '0' : paidAmount}
+              onChange={(e) => setPaidAmount(e.target.value)}
+              disabled={paymentMethod === 'credit'}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:bg-slate-100"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Remarks</span>
+            <textarea
+              rows={2}
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="w-full py-2 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
       </div>
     </div>
   )

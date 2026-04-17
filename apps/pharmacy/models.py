@@ -141,6 +141,13 @@ class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
 
     hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="pharmacy_invoices")
     patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="pharmacy_invoices")
+    ipd_admission = models.ForeignKey(
+        "ipd.IPDAdmission",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pharmacy_invoices",
+    )
     referred_by = models.ForeignKey(DoctorProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name="pharmacy_referrals")
     
     invoice_no = models.CharField(max_length=50, unique=True)
@@ -154,6 +161,8 @@ class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
     cgst = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     sgst = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     grand_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    payment_method = models.CharField(max_length=20, default="cash")
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     
     remarks = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_pharmacy_invoices")

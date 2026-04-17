@@ -252,8 +252,8 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
   const calcCell = `${num} bg-amber-50/90`
 
   return (
-    <div className="h-full flex flex-col gap-2 overflow-hidden p-3 text-slate-800 text-[14px]">
-      <div className="shrink-0 flex flex-wrap items-end gap-x-2 gap-y-1">
+    <div className="h-full flex flex-col gap-3 overflow-hidden p-3 text-slate-800 text-[14px] bg-gradient-to-br from-slate-50 via-white to-emerald-50/40 rounded-xl">
+      <div className="shrink-0 flex flex-wrap items-end gap-x-2 gap-y-1 bg-white/95 border border-slate-200/80 rounded-xl px-3 py-2 shadow-sm">
         <div className="flex flex-col min-w-[10rem] flex-1">
           <span className="text-[10px] font-semibold text-slate-500 uppercase">Supplier *</span>
           <PurchaseSupplierPicker supplierId={supplierId} supplierName={supplierName} onChange={setSupplier} required />
@@ -299,10 +299,10 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 min-w-0 border border-slate-200 rounded bg-white overflow-hidden flex flex-col">
+      <div className="flex-1 min-h-0 min-w-0 border border-slate-200/90 rounded-xl bg-white overflow-hidden flex flex-col shadow-sm">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
           <table className="w-full border-collapse table-fixed text-[11px]">
-            <thead className="bg-slate-100 sticky top-0 z-10">
+            <thead className="bg-gradient-to-b from-slate-100 to-slate-50 sticky top-0 z-10">
               <tr className="text-left">
                 <th className={`${th} w-[16%]`}>Medicine</th>
                 <th className={`${th} w-[6%]`}>Batch</th>
@@ -327,7 +327,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                 const pv = previews[i] || {}
                 const tq = pv.totalQty
                 return (
-                  <tr key={i}>
+                  <tr key={i} className={i % 2 ? 'bg-slate-50/40' : 'hover:bg-emerald-50/30 transition-colors'}>
                     <td className={td}>
                       <PurchaseMedicinePicker
                         medicineId={ln.medicine}
@@ -389,7 +389,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                         title="Tablets per pack (e.g. 10)"
                       />
                     </td>
-                    <td className={`${td} ${calcCell}`} title="Qty × conversion (tablets)">
+                    <td className={`${td} ${calcCell} bg-amber-50/70`} title="Qty × conversion (tablets)">
                       {tq > 0 ? (Number.isInteger(tq) ? tq : tq.toFixed(3)) : ''}
                     </td>
                     <td className={td}>
@@ -456,9 +456,9 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                         </label>
                       </td>
                     ) : null}
-                    <td className={`${td} ${calcCell}`}>{pv.taxableAmount > 0 ? pv.taxableAmount.toFixed(2) : ''}</td>
+                    <td className={`${td} ${calcCell} bg-amber-50/70`}>{pv.taxableAmount > 0 ? pv.taxableAmount.toFixed(2) : ''}</td>
                     {challanGstEnabled ? (
-                      <td className={`${td} ${calcCell}`}>
+                      <td className={`${td} ${calcCell} bg-amber-50/70`}>
                         {pv.gstAmount > 0 ? (
                           <>
                             <div>{pv.gstAmount.toFixed(2)}</div>
@@ -473,7 +473,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                         )}
                       </td>
                     ) : null}
-                    <td className={`${td} ${calcCell} font-semibold`}>
+                    <td className={`${td} ${calcCell} bg-amber-50/70 font-semibold`}>
                       {pv.finalAmount > 0 ? pv.finalAmount.toFixed(2) : ''}
                     </td>
                     <td className={`${td} p-0`}>
@@ -491,7 +491,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
               })}
             </tbody>
             <tfoot>
-              <tr className="bg-slate-50 font-semibold text-slate-700">
+              <tr className="bg-gradient-to-r from-slate-50 to-emerald-50/40 font-semibold text-slate-700">
                 <td colSpan={challanGstEnabled ? 12 : 11} className={`${td} text-right text-[11px] pr-1`}>
                   Totals
                 </td>
@@ -513,7 +513,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
         <button
           type="button"
           onClick={addRow}
-          className="flex items-center gap-0.5 border border-slate-200 px-2 py-1 rounded text-[11px]"
+          className="flex items-center gap-0.5 border border-slate-200 bg-white px-2 py-1 rounded-lg text-[11px] font-medium hover:bg-slate-50 transition-colors"
         >
           <Plus size={12} /> Row
         </button>
@@ -521,7 +521,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
           type="button"
           onClick={submit}
           disabled={submitting}
-          className="bg-emerald-600 text-white px-3 py-1.5 rounded text-[11px] font-semibold disabled:opacity-50"
+          className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md shadow-emerald-200 hover:from-emerald-700 hover:to-teal-700 transition-all disabled:opacity-50"
         >
           {submitting ? 'Posting…' : 'Post purchase'}
         </button>

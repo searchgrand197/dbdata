@@ -3987,8 +3987,8 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     
     ledgerRowsHtml = items.map((item, i) => {
-      const isPayment = item.type === 'payment';
-      const isDiscount = item.type !== 'payment' && parseFloat(item.amount) < 0;
+      const isPayment = item.type === 'payment' || item.type === 'pharmacy_payment';
+      const isDiscount = !isPayment && parseFloat(item.amount) < 0;
       let charStr = !isPayment ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : '';
       let payStr = isPayment ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : '';
       
@@ -6895,7 +6895,8 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                       {[...ledger.charges, ...ledger.payments]
                         .sort((a, b) => new Date(a.date) - new Date(b.date))
                         .map((item, i) => {
-                          const isDiscount = item.type !== 'payment' && parseFloat(item.amount) < 0
+                          const isPayment = item.type === 'payment' || item.type === 'pharmacy_payment'
+                          const isDiscount = !isPayment && parseFloat(item.amount) < 0
                           return (
                             <tr key={`${item.type}-${item.id}-${i}`} className={`hover:bg-gray-50/80 transition-colors ${isDiscount ? 'bg-amber-50/40' : ''}`}>
                               <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">{format(new Date(item.date), 'd/M/yy HH:mm')}</td>
@@ -6903,13 +6904,13 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {item.type === 'room_rent'  && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold">RENT</span>}
                                   {isDiscount                 && <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold">DISCOUNT</span>}
-                                  <span className={`text-xs font-semibold ${item.type === 'payment' ? 'text-emerald-700' : isDiscount ? 'text-amber-700' : 'text-gray-800'}`}>
+                                  <span className={`text-xs font-semibold ${isPayment ? 'text-emerald-700' : isDiscount ? 'text-amber-700' : 'text-gray-800'}`}>
                                     {item.description}
                                   </span>
                                 </div>
                               </td>
                               <td className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
-                                {item.type === 'payment' ? (
+                                {isPayment ? (
                                   <span className="text-gray-300">—</span>
                                 ) : (editingLedgerId === item.id && item.type !== 'room_rent') ? (
                                   <div className="flex items-center justify-end gap-1">
@@ -6950,7 +6951,7 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-right font-medium text-emerald-600 whitespace-nowrap">
-                                {item.type === 'payment'
+                                {isPayment
                                   ? parseFloat(item.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })
                                   : <span className="text-gray-300">—</span>}
                               </td>
@@ -7178,10 +7179,10 @@ function PrintIpdLedger({ admission, ledger, onClose }) {
                 <td className="py-2.5 text-xs text-gray-600">{format(new Date(item.date), 'd/M/yy')}</td>
                 <td className="py-2.5 text-sm">{item.description}</td>
                 <td className="py-2.5 text-right font-medium">
-                  {item.type !== 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                  {(item.type !== 'payment' && item.type !== 'pharmacy_payment') ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
                 </td>
                 <td className="py-2.5 text-right font-medium">
-                  {item.type === 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                  {(item.type === 'payment' || item.type === 'pharmacy_payment') ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
                 </td>
               </tr>
             ))}

@@ -15,6 +15,7 @@ from apps.beds.models import Bed
 from apps.billing.models import BillingInvoice, InvoiceItem, InvoiceNumberSequence
 from apps.payments.models import PaymentTransaction
 from apps.payments.serializers import PaymentTransactionSerializer
+from apps.pharmacy.models import PharmacyInvoice
 from apps.roles_permissions.permissions import HasRequiredPermission
 from apps.auditlogs.services import create_audit_log
 from apps.shared.response import success_response
@@ -265,6 +266,48 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "amount": str(inv.total_amount),
                 "invoice_no": inv.invoice_no
             })
+
+        pharmacy_invoices = PharmacyInvoice.objects.filter(
+            ipd_admission=admission,
+            status=PharmacyInvoice.Status.FINALIZED,
+        ).order_by("-created_at")
+        pharmacy_total = Decimal("0.00")
+        pharmacy_paid = Decimal("0.00")
+        pharmacy_payment_rows = []
+        for pinv in pharmacy_invoices:
+            grand_total = pinv.grand_total or Decimal("0.00")
+            method = (pinv.payment_method or "cash").lower()
+            if method == "credit":
+                paid_amount = max(Decimal("0.00"), pinv.paid_amount or Decimal("0.00"))
+                due_amount = max(Decimal("0.00"), grand_total - paid_amount)
+            else:
+                # For non-credit pharmacy sales, treat bill as settled in ledger.
+                paid_amount = grand_total
+                due_amount = Decimal("0.00")
+            pharmacy_total += due_amount
+            pharmacy_paid += paid_amount
+            if due_amount > 0:
+                record_charges.append(
+                    {
+                        "id": f"pharmacy-{pinv.id}",
+                        "type": "pharmacy_charge",
+                        "date": pinv.created_at.isoformat(),
+                        "description": f"Pharmacy Due ({pinv.payment_method.upper()})",
+                        "amount": str(due_amount),
+                        "invoice_no": pinv.invoice_no,
+                    }
+                )
+            if paid_amount > 0:
+                pharmacy_payment_rows.append(
+                    {
+                        "id": f"pharmacy-paid-{pinv.id}",
+                        "type": "pharmacy_payment",
+                        "date": pinv.created_at.isoformat(),
+                        "description": f"Pharmacy Paid - {pinv.payment_method.upper()}",
+                        "amount": str(paid_amount),
+                        "invoice_no": pinv.invoice_no,
+                    }
+                )
             
         # 2. Dynamic Room Rent
         room_rent = Decimal("0.00")
@@ -286,7 +329,7 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "invoice_no": "SYSTEM"
             })
             
-        total_charges = invoices_total + room_rent
+        total_charges = invoices_total + room_rent + pharmacy_total
         
         # 3. Payments
         payments = PaymentTransaction.objects.filter(
@@ -307,6 +350,9 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "amount": str(p.amount),
                 "invoice_no": p.invoice.invoice_no
             })
+        # Show pharmacy paid rows in statement for visibility,
+        # but do not include them in IPD total_paid/balance calculations.
+        record_payments.extend(pharmacy_payment_rows)
             
         balance_due = total_charges - total_paid
 

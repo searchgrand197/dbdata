@@ -71,6 +71,7 @@ class PharmacyInvoiceSerializer(serializers.ModelSerializer):
     items = PharmacyInvoiceItemSerializer(many=True, read_only=True)
     patient_details = PatientSerializer(source="patient", read_only=True)
     doctor_details = DoctorProfileSerializer(source="referred_by", read_only=True)
+    due_amount = serializers.SerializerMethodField()
 
     def validate(self, attrs: dict) -> dict:
         gst_on = attrs.get("gst_enabled")
@@ -79,7 +80,26 @@ class PharmacyInvoiceSerializer(serializers.ModelSerializer):
         if gst_on is False:
             attrs["cgst"] = Decimal("0")
             attrs["sgst"] = Decimal("0")
+        grand_total = attrs.get("grand_total")
+        paid_amount = attrs.get("paid_amount")
+        payment_method = attrs.get("payment_method")
+        if grand_total is None and self.instance is not None:
+            grand_total = self.instance.grand_total
+        if paid_amount is None and self.instance is not None:
+            paid_amount = self.instance.paid_amount
+        if payment_method is None and self.instance is not None:
+            payment_method = self.instance.payment_method
+        if paid_amount is not None and grand_total is not None:
+            if paid_amount < 0:
+                raise serializers.ValidationError({"paid_amount": ["Paid amount cannot be negative."]})
+            if paid_amount > grand_total:
+                raise serializers.ValidationError({"paid_amount": ["Paid amount cannot exceed grand total."]})
+        if payment_method == "credit" and paid_amount is not None and paid_amount > 0:
+            raise serializers.ValidationError({"paid_amount": ["Keep paid amount 0 for credit bills."]})
         return attrs
+
+    def get_due_amount(self, obj):
+        return str(max(Decimal("0"), (obj.grand_total or Decimal("0")) - (obj.paid_amount or Decimal("0"))))
 
     class Meta:
         model = PharmacyInvoice
@@ -98,6 +118,10 @@ class PharmacyInvoiceSerializer(serializers.ModelSerializer):
             "cgst",
             "sgst",
             "grand_total",
+            "payment_method",
+            "paid_amount",
+            "due_amount",
+            "ipd_admission",
             "remarks",
             "items",
             "created_at",
