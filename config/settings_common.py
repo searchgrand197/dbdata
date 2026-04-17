@@ -236,3 +236,9 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
 }
 
+# Web push (VAPID) for mobile/laptop notifications while app is backgrounded.
+# Set these in .env to enable push delivery.
+WEBPUSH_PUBLIC_KEY = env.str("WEBPUSH_PUBLIC_KEY", default="")
+WEBPUSH_PRIVATE_KEY = env.str("WEBPUSH_PRIVATE_KEY", default="")
+WEBPUSH_SUB_EMAIL = env.str("WEBPUSH_SUB_EMAIL", default="")
+

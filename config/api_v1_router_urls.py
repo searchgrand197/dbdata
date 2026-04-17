@@ -57,7 +57,7 @@ from apps.treatment.views import (
     TreatmentPlanViewSet,
     TreatmentTaskViewSet,
 )
-from apps.beds.views import FloorViewSet, BedRoomViewSet, BedViewSet
+from apps.beds.views import FloorViewSet, BedRoomViewSet, BedViewSet, BedCleaningTaskViewSet
 from apps.lab.views import LabTestCategoryViewSet, LabTestViewSet, LabReportViewSet, LabTestResultViewSet
 from apps.pharmacy.views import (
     PharmacyInvoiceViewSet,
@@ -135,6 +135,7 @@ router.register(r"settings/leave-approvers", LeaveApproverViewSet, basename="set
 router.register(r"beds/floors", FloorViewSet, basename="beds-floors")
 router.register(r"beds/rooms", BedRoomViewSet, basename="beds-rooms")
 router.register(r"beds/beds", BedViewSet, basename="beds-beds")
+router.register(r"beds/cleaning-tasks", BedCleaningTaskViewSet, basename="beds-cleaning-tasks")
 router.register(r"lab/categories", LabTestCategoryViewSet, basename="lab-categories")
 router.register(r"lab/tests", LabTestViewSet, basename="lab-tests")
 router.register(r"lab/reports", LabReportViewSet, basename="lab-reports")

@@ -1,5 +1,5 @@
 from decimal import Decimal
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,6 +9,7 @@ from apps.discharge.serializers import DischargeSummarySerializer
 from apps.ipd.models import IPDAdmission
 from apps.billing.models import BillingInvoice
 from apps.payments.models import PaymentTransaction
+from apps.pharmacy.models import PharmacyInvoice
 from apps.shared.response import success_response
 
 
@@ -104,12 +105,22 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
             invoice__ipd_admission=admission,
             invoice__status=BillingInvoice.Status.FINALIZED
         ).exclude(
-            invoice__invoice_no__startswith="IPDADV-" # Exclude Advances
+            # Exclude paid advances only; include credit advances as due services.
+            Q(invoice__invoice_no__startswith="IPDADV-") & Q(invoice__amount_paid__gt=0)
         ).exclude(
             invoice__invoice_no__startswith="IPDROOM-" # Exclude finalized Room bills
         ).exclude(
             description__icontains="Room Rent" # Double-check exclusion by description
         ).aggregate(total=Sum("line_total"))["total"] or Decimal("0.00")
+
+        pharmacy_invoices = PharmacyInvoice.objects.filter(
+            ipd_admission=admission,
+            status=PharmacyInvoice.Status.FINALIZED,
+        )
+        pharmacy_services_total = (
+            pharmacy_invoices.aggregate(total=Sum("grand_total"))["total"] or Decimal("0.00")
+        )
+        total_services += pharmacy_services_total
 
         # 2. Dynamic Room Charges
         room_total = Decimal("0.00")
@@ -133,6 +144,18 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
             invoice__ipd_admission=admission,
             status=PaymentTransaction.Status.SUCCESS
         ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        pharmacy_paid = Decimal("0.00")
+        for pinv in pharmacy_invoices:
+            grand_total = pinv.grand_total or Decimal("0.00")
+            method = (pinv.payment_method or "cash").lower()
+            if method == "credit":
+                paid_amount = max(Decimal("0.00"), pinv.paid_amount or Decimal("0.00"))
+                paid_amount = min(paid_amount, grand_total)
+            else:
+                paid_amount = grand_total
+            pharmacy_paid += paid_amount
+        total_paid += pharmacy_paid
 
         total_billed = total_services + room_total
         outstanding = total_billed - total_paid

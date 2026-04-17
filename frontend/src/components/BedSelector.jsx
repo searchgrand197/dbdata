@@ -235,6 +235,12 @@ export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' })
   const [selectedBed, setSelectedBed] = useState(null)
   const [filter, setFilter] = useState('all')
   const [tooltip, setTooltip] = useState(null) // { x, y, bed, room }
+  const [showFastClean, setShowFastClean] = useState(false)
+  const [housekeepers, setHousekeepers] = useState([])
+  const [fastCleanBedId, setFastCleanBedId] = useState('')
+  const [fastStaffId, setFastStaffId] = useState('')
+  const [fastNotes, setFastNotes] = useState('')
+  const [fastSaving, setFastSaving] = useState(false)
 
   useEffect(() => {
     api.get('/beds/beds/by-floor/')
@@ -246,8 +252,20 @@ export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' })
       .catch(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    if (!showFastClean) return
+    api.get('/beds/beds/housekeeping-on-duty/')
+      .then(({ data }) => setHousekeepers(data?.data || []))
+      .catch(() => setHousekeepers([]))
+  }, [showFastClean])
+
   const floor = floors[floorIdx] || null
   const rooms = floor?.rooms || []
+  const cleaningBeds = floors.flatMap(fl =>
+    (fl.rooms || []).flatMap(r => (r.beds || [])
+      .filter(b => b.status === 'cleaning')
+      .map(b => ({ ...b, room_name: r.name, floor_name: fl.name })))
+  )
 
   // Filter rooms on current floor
   const filteredRooms = rooms.filter(r => {
@@ -283,6 +301,25 @@ export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' })
     onClose()
   }
 
+  async function handleFastClean(markAvailable) {
+    if (!fastCleanBedId) return
+    setFastSaving(true)
+    try {
+      await api.post(`/beds/beds/${fastCleanBedId}/fast-clean/`, {
+        staff_id: fastStaffId || null,
+        mark_available: markAvailable,
+        notes: fastNotes,
+      })
+      const { data } = await api.get('/beds/beds/by-floor/')
+      const fl = data?.data || data || []
+      setFloors(Array.isArray(fl) ? fl : [])
+      setFastNotes('')
+      if (markAvailable) setFastCleanBedId('')
+    } finally {
+      setFastSaving(false)
+    }
+  }
+
   const totalAvailable = floors.reduce((s, f) => s + (f.available_beds || 0), 0)
   const floorAvail = floor?.available_beds || 0
 
@@ -299,9 +336,17 @@ export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' })
               <p className="text-xs text-blue-200">{totalAvailable} beds available · {floors.length} floors</p>
             </div>
           </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center">
-            <X size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowFastClean(true)}
+              className="px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-[11px] font-bold flex items-center gap-1.5"
+            >
+              <Wrench size={12} /> Fast Clean
+            </button>
+            <button onClick={onClose} className="w-7 h-7 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center">
+              <X size={14} />
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -523,6 +568,57 @@ export default function BedSelector({ onSelect, onClose, zIndexClass = 'z-50' })
           </button>
         </div>
       </div>
+
+      {showFastClean && (
+        <div className="fixed inset-0 z-[999] bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 bg-gradient-to-r from-cyan-600 to-blue-700 text-white flex items-center justify-between">
+              <h3 className="text-sm font-bold flex items-center gap-2"><Wrench size={14} /> Fast Cleaning Desk</h3>
+              <button onClick={() => setShowFastClean(false)} className="w-7 h-7 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center"><X size={13} /></button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="text-[11px] font-semibold text-gray-500">Cleaning Bed</label>
+                <select value={fastCleanBedId} onChange={e => setFastCleanBedId(e.target.value)} className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select cleaning bed...</option>
+                  {cleaningBeds.map(b => (
+                    <option key={b.id} value={b.id}>{b.bed_code} · {b.room_name} · {b.floor_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-semibold text-gray-500">Assign to Staff (on duty)</label>
+                <select value={fastStaffId} onChange={e => setFastStaffId(e.target.value)} className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Auto-pick / keep current</option>
+                  {housekeepers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}{s.employee_code ? ` (${s.employee_code})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-semibold text-gray-500">Reception Note</label>
+                <textarea value={fastNotes} onChange={e => setFastNotes(e.target.value)} rows={2} className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="Urgent bed turnover requested..." />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  disabled={fastSaving || !fastCleanBedId}
+                  onClick={() => handleFastClean(false)}
+                  className="flex-1 py-2 rounded-lg border border-cyan-300 bg-cyan-50 text-cyan-700 font-semibold text-sm disabled:opacity-40"
+                >
+                  Assign / Reassign Task
+                </button>
+                <button
+                  disabled={fastSaving || !fastCleanBedId}
+                  onClick={() => handleFastClean(true)}
+                  className="flex-1 py-2 rounded-lg bg-emerald-600 text-white font-semibold text-sm disabled:opacity-40"
+                >
+                  Mark Available Now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

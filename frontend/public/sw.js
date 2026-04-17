@@ -1,10 +1,14 @@
-const CACHE_NAME = 'pharmacy-v1'
-const API_CACHE = 'pharmacy-api-v1'
+const CACHE_NAME = 'pharmacy-v3'
+const API_CACHE = 'pharmacy-api-v3'
 
 const PRECACHE_URLS = [
   '/',
   '/offline.html',
   '/manifest.json',
+  '/manifest-doctor.json',
+  '/manifest-staff.json',
+  '/manifest-pharmacy.json',
+  '/manifest-receptionist.json',
   '/icons/icon-192.svg',
   '/icons/icon-512.svg',
 ]
@@ -102,3 +106,44 @@ async function networkFirstApi(request) {
     )
   }
 }
+
+self.addEventListener('push', (event) => {
+  let payload = {}
+  try {
+    payload = event.data ? event.data.json() : {}
+  } catch {
+    payload = { title: 'New Notification', body: event.data ? event.data.text() : '' }
+  }
+
+  const title = payload.title || 'New Notification'
+  const options = {
+    body: payload.body || '',
+    icon: payload.icon || '/icons/icon-staff-192.png?v=4',
+    badge: payload.badge || '/icons/icon-staff-192.png?v=4',
+    data: {
+      url: payload.url || '/staff',
+    },
+    tag: payload.tag || 'hms-notification',
+    renotify: true,
+    vibrate: [200, 100, 200, 100, 200],
+    requireInteraction: true,
+  }
+
+  event.waitUntil(self.registration.showNotification(title, options))
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const targetUrl = event.notification?.data?.url || '/staff'
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if ('focus' in client && client.url.includes(targetUrl)) {
+          return client.focus()
+        }
+      }
+      if (clients.openWindow) return clients.openWindow(targetUrl)
+      return null
+    }),
+  )
+})

@@ -147,17 +147,202 @@ function TasksTab() {
   const [loading, setLoading] = useState(true)
   const [section, setSection] = useState('pending')
   const [selectedCompletedPatient, setSelectedCompletedPatient] = useState('')
+  const [pushState, setPushState] = useState('checking')
+  const knownPendingTaskIdsRef = React.useRef(new Set())
+  const notificationPermissionAskedRef = React.useRef(false)
+  const initialLoadDoneRef = React.useRef(false)
+  const alertCooldownRef = React.useRef(0)
 
-  const fetchTasks = useCallback(async () => {
-    setLoading(true)
+  const requestNotificationPermissionOnce = useCallback(async () => {
+    if (!('Notification' in window)) return
+    if (Notification.permission !== 'default') return
+    if (notificationPermissionAskedRef.current) return
+    notificationPermissionAskedRef.current = true
     try {
-      const { data } = await api.get('/treatment-tasks/?mine=true&ordering=date,time_of_day&limit=1000')
-      setTasks(Array.isArray(data) ? data : (data.results || []))
-    } catch { toast.error('Failed to load tasks') }
-    finally { setLoading(false) }
+      await Notification.requestPermission()
+    } catch {
+      // Ignore permission request failures on unsupported browsers.
+    }
   }, [])
 
-  useEffect(() => { fetchTasks() }, [fetchTasks])
+  const refreshPushState = useCallback(async () => {
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushState('unsupported')
+      return
+    }
+    if (Notification.permission === 'denied') {
+      setPushState('blocked')
+      return
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const subscription = await registration.pushManager.getSubscription()
+      if (subscription) {
+        setPushState('subscribed')
+      } else if (Notification.permission === 'granted') {
+        setPushState('ready')
+      } else {
+        setPushState('not_allowed')
+      }
+    } catch {
+      setPushState('error')
+    }
+  }, [])
+
+  const enablePushNow = useCallback(async () => {
+    try {
+      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        toast.error('Push not supported on this browser')
+        setPushState('unsupported')
+        return
+      }
+      let permission = Notification.permission
+      if (permission === 'default') permission = await Notification.requestPermission()
+      if (permission !== 'granted') {
+        setPushState('blocked')
+        toast.error('Notification permission is required')
+        return
+      }
+      const { data } = await api.get('/notifications/push/public-key/')
+      const publicKey = data?.public_key
+      if (!publicKey) {
+        toast.error('Push key not configured on server')
+        setPushState('error')
+        return
+      }
+      const urlBase64ToUint8Array = (base64String) => {
+        const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+        const normalized = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+        const rawData = atob(normalized)
+        return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)))
+      }
+      const registration = await navigator.serviceWorker.ready
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        })
+      }
+      const payload = subscription.toJSON()
+      await api.post('/notifications/push/subscribe/', {
+        endpoint: payload.endpoint,
+        p256dh_key: payload.keys?.p256dh,
+        auth_key: payload.keys?.auth,
+      })
+      toast.success('Push alerts enabled on this device')
+      setPushState('subscribed')
+    } catch {
+      toast.error('Could not enable push alerts')
+      setPushState('error')
+    }
+  }, [])
+
+  const playTaskRing = useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext
+      if (!AudioCtx) return
+      const ctx = new AudioCtx()
+      const now = ctx.currentTime
+      const sequence = [740, 988, 740, 988]
+      sequence.forEach((freq, index) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'triangle'
+        osc.frequency.value = freq
+        gain.gain.setValueAtTime(0.0001, now)
+        gain.gain.exponentialRampToValueAtTime(0.2, now + index * 0.22 + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.22 + 0.18)
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start(now + index * 0.22)
+        osc.stop(now + index * 0.22 + 0.2)
+      })
+      window.setTimeout(() => {
+        try { ctx.close() } catch {}
+      }, 1600)
+    } catch {
+      // Audio playback may be blocked by browser policy.
+    }
+  }, [])
+
+  const alertForNewTasks = useCallback((newPendingTasks) => {
+    if (!newPendingTasks.length) return
+    const now = Date.now()
+    if (now - alertCooldownRef.current < 5000) return
+    alertCooldownRef.current = now
+
+    playTaskRing()
+    toast.success(`${newPendingTasks.length} new task${newPendingTasks.length > 1 ? 's' : ''} assigned`)
+
+    if (!('Notification' in window)) return
+    if (Notification.permission !== 'granted') return
+
+    const firstTask = newPendingTasks[0]
+    const patientName = getTaskPatientName(firstTask)
+    const body = newPendingTasks.length === 1
+      ? `${firstTask.item_title} - ${patientName}`
+      : `${newPendingTasks.length} new tasks assigned. Latest: ${firstTask.item_title}`
+
+    try {
+      new Notification('New Staff Task', {
+        body,
+        icon: '/icons/icon-staff-192.png?v=4',
+        badge: '/icons/icon-staff-192.png?v=4',
+        tag: 'staff-task-alert',
+        renotify: true,
+      })
+    } catch {
+      // Ignore notification failures.
+    }
+  }, [playTaskRing])
+
+  const fetchTasks = useCallback(async () => {
+    if (!initialLoadDoneRef.current) setLoading(true)
+    try {
+      const { data } = await api.get('/treatment-tasks/?mine=true&ordering=date,time_of_day&limit=1000')
+      const nextTasks = Array.isArray(data) ? data : (data.results || [])
+      const nextPendingTasks = nextTasks.filter((task) => task.status === 'pending')
+      const nextPendingIdSet = new Set(nextPendingTasks.map((task) => String(task.id)))
+
+      if (initialLoadDoneRef.current) {
+        const newPendingTasks = nextPendingTasks.filter(
+          (task) => !knownPendingTaskIdsRef.current.has(String(task.id)),
+        )
+        alertForNewTasks(newPendingTasks)
+      }
+
+      knownPendingTaskIdsRef.current = nextPendingIdSet
+      setTasks(nextTasks)
+      if (!initialLoadDoneRef.current) {
+        initialLoadDoneRef.current = true
+        requestNotificationPermissionOnce()
+      }
+    } catch { toast.error('Failed to load tasks') }
+    finally { setLoading(false) }
+  }, [alertForNewTasks, requestNotificationPermissionOnce])
+
+  useEffect(() => {
+    fetchTasks()
+
+    const pollId = window.setInterval(() => {
+      fetchTasks()
+    }, 10000)
+
+    const onFocus = () => fetchTasks()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchTasks()
+    }
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    refreshPushState()
+    return () => {
+      window.clearInterval(pollId)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [fetchTasks, refreshPushState])
 
   async function markDone(task) {
     try {
@@ -243,6 +428,29 @@ function TasksTab() {
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
+      <div className="bg-white border border-gray-100 rounded-xl px-3 py-2 flex items-center justify-between">
+        <p className="text-xs">
+          <span className="font-semibold text-gray-700">Push Status:</span>{' '}
+          <span className={`font-bold ${
+            pushState === 'subscribed' ? 'text-emerald-600' : pushState === 'blocked' ? 'text-rose-600' : 'text-amber-600'
+          }`}>
+            {pushState === 'subscribed' ? 'Subscribed' :
+             pushState === 'blocked' ? 'Blocked' :
+             pushState === 'unsupported' ? 'Unsupported Browser' :
+             pushState === 'ready' ? 'Ready (not subscribed)' :
+             pushState === 'not_allowed' ? 'Permission needed' :
+             pushState === 'checking' ? 'Checking...' : 'Error'}
+          </span>
+        </p>
+        <button
+          type="button"
+          onClick={enablePushNow}
+          className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+        >
+          Enable Push
+        </button>
+      </div>
+
       {/* Section tabs */}
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
         {SECTIONS.map(s => (
