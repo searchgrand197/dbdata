@@ -74,35 +74,18 @@ function qtySuffixFromItem(it) {
 
 function formatQtyCell(it) {
   const q = Number(it?.qty || 0)
-  const stripSize = stripSizeFromItem(it)
-  if (stripSize > 1) {
-    const strips = Math.floor(q / stripSize)
-    const tabs = Math.round((q - strips * stripSize) * 100) / 100
-    if (strips > 0 && tabs > 0) {
-      const tabText = tabs % 1 === 0 ? String(tabs) : tabs.toFixed(2)
-      return `${strips} str + ${tabText} tab`
-    }
-    if (strips > 0) return `${strips} str`
-    const tabOnly = q % 1 === 0 ? String(q) : q.toFixed(2)
-    return `${tabOnly} tab`
-  }
-  const suf = qtySuffixFromItem(it)
-  const qStr = q % 1 === 0 ? String(q) : q.toFixed(2)
-  return `${qStr} ${suf}`
+  return q % 1 === 0 ? String(q) : q.toFixed(2)
 }
 
 function formatInvoiceTotalQty(items) {
   const list = Array.isArray(items) ? items : []
   let sum = 0
-  const sufSet = new Set()
   for (const it of list) {
     const q = Number(it?.qty || 0)
     if (Number.isFinite(q)) sum += q
-    sufSet.add(qtySuffixFromItem(it))
   }
-  const suf = sufSet.size === 1 ? [...sufSet][0] : 'unt'
   const sumStr = sum % 1 === 0 ? String(sum) : sum.toFixed(2)
-  return `${sumStr} ${suf}`
+  return sumStr
 }
 
 function formatMoney(n) {

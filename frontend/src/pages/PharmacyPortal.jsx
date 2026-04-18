@@ -28,7 +28,7 @@ import PurchaseChallanPanel from '../pharmacy/PurchaseChallanPanel'
 import PurchaseHistoryDashboard from '../pharmacy/PurchaseHistoryDashboard'
 import PharmacyDashboard from '../pharmacy/PharmacyDashboard'
 import PharmacyCategoriesView from '../pharmacy/PharmacyCategoriesView'
-import { formatStripsAndTablets, parseApiError } from '../pharmacy/pharmacyCalculations'
+import { parseApiError } from '../pharmacy/pharmacyCalculations'
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -328,6 +328,29 @@ function isLowStockRow(qty, stripSize) {
   return q < 15
 }
 
+function preferredPackFromConversions(conversions = {}) {
+  const box = Number(conversions.box ?? conversions.BOX) || 0
+  if (box > 0) return { perPack: box, label: 'box' }
+  const strip = Number(conversions.strip ?? conversions.STRIP) || 0
+  if (strip > 0) return { perPack: strip, label: 'strip' }
+  return { perPack: 0, label: 'pack' }
+}
+
+function formatPackAndBaseStock(baseQty, perPack, packLabel, baseLabel) {
+  const q = Number(baseQty) || 0
+  const pp = Number(perPack) || 0
+  const bl = (baseLabel || 'unit').toLowerCase()
+  const pl = (packLabel || 'pack').toLowerCase()
+  if (q <= 0) return `0 ${bl}`
+  if (!(pp > 0)) return `${q % 1 === 0 ? q : q.toFixed(2)} ${bl}`
+  const packs = Math.floor(q / pp)
+  const rem = Math.round((q - packs * pp) * 100) / 100
+  const parts = []
+  if (packs > 0) parts.push(`${packs} ${pl}${packs === 1 ? '' : 's'}`)
+  if (rem > 0) parts.push(`${rem % 1 === 0 ? rem : Number(rem.toFixed(2))} ${bl}`)
+  return parts.length ? parts.join(' + ') : `0 ${bl}`
+}
+
 function normalizeStockLedgerList(res) {
   const raw = res?.data
   if (!raw) return []
@@ -379,12 +402,18 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
   const medicineById = new Map(medicines.map((m) => [String(m.id), m]))
   const medIdsWithBatch = new Set(batches.map((b) => String(b.medicine)))
 
-  const filtered = batches.filter((b) => {
-    const med = medicineById.get(String(b.medicine))
-    const name = med?.name?.toLowerCase() ?? ''
-    const bn = (b.batch_no ?? '').toLowerCase()
-    return name.includes(qLower) || bn.includes(qLower)
-  })
+  const filtered = batches
+    .filter((b) => {
+      const med = medicineById.get(String(b.medicine))
+      const name = med?.name?.toLowerCase() ?? ''
+      const bn = (b.batch_no ?? '').toLowerCase()
+      return name.includes(qLower) || bn.includes(qLower)
+    })
+    .sort((a, b) => {
+      const ta = new Date(a?.created_at || 0).getTime()
+      const tb = new Date(b?.created_at || 0).getTime()
+      return tb - ta
+    })
 
   const medicinesWithoutBatch = medicines.filter((m) => {
     if (medIdsWithBatch.has(String(m.id))) return false
@@ -452,11 +481,11 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
               {filtered.map((b) => {
                 const med = medicineById.get(String(b.medicine))
                 const conv = med?.unit_conversions || {}
-                const strip = Number(conv.strip ?? conv.STRIP) || 0
+                const packPref = preferredPackFromConversions(conv)
                 const baseLabel = (med?.unit_name || 'tab').toLowerCase()
                 const qty = Number(b.quantity ?? 0)
-                const stockLabel = formatStripsAndTablets(qty, strip, baseLabel)
-                const low = isLowStockRow(qty, strip)
+                const stockLabel = formatPackAndBaseStock(qty, packPref.perPack, packPref.label, baseLabel)
+                const low = isLowStockRow(qty, packPref.perPack)
                 const expCls = expiryRowClass(b.expiry_date)
                 return (
                   <tr
@@ -619,7 +648,7 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
   }, [batch.id])
 
   const conv = medicine?.unit_conversions || {}
-  const strip = Number(conv.strip ?? conv.STRIP) || 0
+  const packPref = preferredPackFromConversions(conv)
   const baseLabel = (medicine?.unit_name || 'tab').toLowerCase()
   const qty = Number(batch.quantity ?? 0)
 
@@ -647,7 +676,7 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
             <dd className={expiryRowClass(batch.expiry_date)}>{safeFormat(batch.expiry_date, 'dd MMM yyyy')}</dd>
             <dt className="text-slate-500">Stock (base)</dt>
             <dd>
-              {formatStripsAndTablets(qty, strip, baseLabel)}
+              {formatPackAndBaseStock(qty, packPref.perPack, packPref.label, baseLabel)}
               <span className="text-slate-400 ml-1 font-mono">
                 ({qty % 1 === 0 ? qty : qty.toFixed(2)} {baseLabel})
               </span>

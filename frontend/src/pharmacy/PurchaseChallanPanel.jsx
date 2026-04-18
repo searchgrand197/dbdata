@@ -46,6 +46,14 @@ function defaultStripConv(med) {
   return tryNum('strip') ?? tryNum('STRIP') ?? tryNum('box') ?? tryNum('BOX')
 }
 
+function rateTypeLabelsForPack(packType) {
+  const p = (packType || '').toLowerCase()
+  if (p === 'box') {
+    return { packRate: 'Box rate', unitRate: 'Unit rate' }
+  }
+  return { packRate: 'Strip rate', unitRate: 'Tablet rate' }
+}
+
 function isLineEmpty(ln) {
   if (!ln) return true
   return (
@@ -373,7 +381,7 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                         onChange={(e) => updateLine(i, { pack_type: e.target.value })}
                         className={inp}
                       >
-                        {['strip', 'box', 'carton'].map((p) => (
+                        {['strip', 'box'].map((p) => (
                           <option key={p} value={p}>
                             {p}
                           </option>
@@ -393,14 +401,19 @@ function PurchaseChallanPanelInner({ onPosted, outletSettings }) {
                       {tq > 0 ? (Number.isInteger(tq) ? tq : tq.toFixed(3)) : ''}
                     </td>
                     <td className={td}>
+                      {(() => {
+                        const labels = rateTypeLabelsForPack(ln.pack_type)
+                        return (
                       <select
                         value={ln.rate_type}
                         onChange={(e) => updateLine(i, { rate_type: e.target.value })}
                         className={inp}
                       >
-                        <option value="STRIP">Strip</option>
-                        <option value="TABLET">Tablet</option>
+                        <option value="STRIP">{labels.packRate}</option>
+                        <option value="TABLET">{labels.unitRate}</option>
                       </select>
+                        )
+                      })()}
                     </td>
                     <td className={td}>
                       <input

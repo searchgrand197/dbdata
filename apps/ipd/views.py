@@ -75,8 +75,17 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         user = self.request.user
         if user.is_superuser:
-            return qs
-        return qs.filter(hospital_id=user.hospital_id)
+            scoped = qs
+        else:
+            scoped = qs.filter(hospital_id=user.hospital_id)
+
+        status_q = (self.request.query_params.get("status") or "").strip().lower()
+        if status_q:
+            allowed = {k for (k, _v) in IPDAdmission.Status.choices}
+            wanted = [s.strip() for s in status_q.split(",") if s.strip() in allowed]
+            if wanted:
+                scoped = scoped.filter(status__in=wanted)
+        return scoped
 
     @transaction.atomic
     def perform_create(self, serializer):

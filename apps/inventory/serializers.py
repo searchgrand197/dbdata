@@ -51,6 +51,7 @@ class MedicineCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Medicine
         fields = [
+            "id",
             "sku",
             "name",
             "company_name",
@@ -69,6 +70,7 @@ class MedicineCreateUpdateSerializer(serializers.ModelSerializer):
             # Server assigns default TAB unit per hospital when omitted (pharmacy quick-create).
             "unit": {"required": False, "allow_null": True},
         }
+        read_only_fields = ["id"]
 
 
 class MedicineCategorySerializer(serializers.ModelSerializer):

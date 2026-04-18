@@ -19,6 +19,17 @@ export function PurchaseMedicinePicker({ medicineId, medicineName, onChange, def
   const [createForm, setCreateForm] = useState({ name: '', pack_info: '1x10', hsn_code: '' })
   const wrapRef = useRef(null)
 
+  function unwrapCreatedMedicine(payload) {
+    if (!payload || typeof payload !== 'object') return null
+    const a = payload?.data
+    if (a && typeof a === 'object' && !Array.isArray(a) && a.id) return a
+    if (Array.isArray(a) && a[0] && a[0].id) return a[0]
+    const b = payload?.entity
+    if (b && typeof b === 'object' && b.id) return b
+    if (payload?.id) return payload
+    return null
+  }
+
   useEffect(() => {
     function handle(e) {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
@@ -72,16 +83,18 @@ export function PurchaseMedicinePicker({ medicineId, medicineName, onChange, def
       }
       if (defaultUnitId) payload.unit = defaultUnitId
       const { data } = await api.post('/medicines/', payload)
-      const med = data?.data ?? data?.entity ?? data
-      const id = med?.id
-      const name = med?.name || createForm.name.trim()
+      const med = unwrapCreatedMedicine(data)
+      const id = med?.id ? String(med.id) : ''
+      const name = (med?.name || createForm.name || '').trim()
       if (!id) throw new Error('Invalid API response')
       onChange(id, name, med)
+      setQ(name)
       setShowCreate(false)
       setOpen(false)
       setCreateForm({ name: '', pack_info: '1x10', hsn_code: '' })
       toast.success('Medicine created')
-      onRefreshCatalog?.()
+      // Avoid full-screen data reload/flicker right after quick-create.
+      // The created medicine is already selected on this line.
     } catch (e) {
       toast.error(parseApiError(e))
     } finally {
@@ -158,6 +171,12 @@ export function PurchaseMedicinePicker({ medicineId, medicineName, onChange, def
           <div
             className="bg-white rounded-lg shadow-xl p-3 w-full max-w-sm border border-slate-200"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                if (!creating) createMedicine()
+              }
+            }}
             role="dialog"
             aria-label="New medicine"
           >
@@ -168,7 +187,7 @@ export function PurchaseMedicinePicker({ medicineId, medicineName, onChange, def
               </button>
             </div>
             <p className="text-[9px] text-slate-500 mb-2">
-              Pack <strong>1×10</strong> means one strip = 10 tablets (saved for stock display). Unit defaults to Tablet if none exists.
+              Pack <strong>1x10</strong> means one strip = 10 tablets (saved for stock display). Unit defaults to Tablet if none exists.
             </p>
             <div className="space-y-2">
               <label className="block">
@@ -186,7 +205,7 @@ export function PurchaseMedicinePicker({ medicineId, medicineName, onChange, def
                   value={createForm.pack_info}
                   onChange={(e) => setCreateForm((f) => ({ ...f, pack_info: e.target.value }))}
                   className="mt-0.5 w-full border border-slate-200 rounded px-2 py-1 text-xs"
-                  placeholder="e.g. 10 tablets / strip"
+                  placeholder="e.g. 1x10 (1 strip x 10 tablets)"
                 />
               </label>
               <label className="block">
