@@ -3987,8 +3987,8 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     
     ledgerRowsHtml = items.map((item, i) => {
-      const isPayment = item.type === 'payment';
-      const isDiscount = item.type !== 'payment' && parseFloat(item.amount) < 0;
+      const isPayment = item.type === 'payment' || item.type === 'pharmacy_payment';
+      const isDiscount = !isPayment && parseFloat(item.amount) < 0;
       let charStr = !isPayment ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : '';
       let payStr = isPayment ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : '';
       
@@ -4299,6 +4299,7 @@ function PaymentSlipSection() {
   const [showQuickServiceEditor, setShowQuickServiceEditor] = useState(false)
   const [newQuickLabel, setNewQuickLabel] = useState('')
   const [newQuickPrice, setNewQuickPrice] = useState('')
+  const [activeIpdByPatient, setActiveIpdByPatient] = useState({})
 
   useEffect(() => {
     try {
@@ -4328,6 +4329,25 @@ function PaymentSlipSection() {
     }, 400)
     return () => clearTimeout(t)
   }, [ptSearch])
+
+  useEffect(() => {
+    fetchActiveIpdAdmissions()
+  }, [])
+
+  async function fetchActiveIpdAdmissions() {
+    try {
+      const { data } = await api.get('/ipd-admissions/?status=admitted&limit=500')
+      const rows = Array.isArray(data?.data) ? data.data : (data?.results || [])
+      const byPatient = {}
+      rows.forEach(adm => {
+        const pid = String(adm?.patient || '')
+        if (pid && !byPatient[pid]) byPatient[pid] = adm
+      })
+      setActiveIpdByPatient(byPatient)
+    } catch {
+      setActiveIpdByPatient({})
+    }
+  }
 
   function addItem() {
     setItems(prev => [...prev, { description: '', unit_price: '', quantity: 1 }])
@@ -4381,9 +4401,20 @@ function PaymentSlipSection() {
   }, 0)
   const discountAmt = Math.min(parseFloat(discount) || 0, subtotal)
   const total = subtotal - discountAmt
+  const selectedPatientHasActiveIpd = !!(patient && activeIpdByPatient[String(patient.id)])
+
+  useEffect(() => {
+    if (paymentMode === 'credit' && !selectedPatientHasActiveIpd) {
+      setPaymentMode('cash')
+    }
+  }, [paymentMode, selectedPatientHasActiveIpd])
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (paymentMode === 'credit' && !selectedPatientHasActiveIpd) {
+      toast.error('Credit mode is available only for active IPD patients')
+      return
+    }
     
     let currentPatient = patient
     let targetPatientId = patient?.id
@@ -4416,11 +4447,13 @@ function PaymentSlipSection() {
     
     setSubmitting(true)
     try {
+      const linkedAdmission = activeIpdByPatient[String(targetPatientId)] || null
       const payload = {
         patient: targetPatientId,
         encounter_type: encounterType,
         status: 'finalized',
         discount_amount: discountAmt.toFixed(2),
+        ipd_admission: linkedAdmission?.id || null,
         items: validItems.map(it => ({
           description: it.description,
           quantity: parseFloat(it.quantity) || 1,
@@ -4430,13 +4463,15 @@ function PaymentSlipSection() {
       const { data } = await api.post('/invoices/', payload)
       const inv = data?.data || data?.entity || data
 
-      // Also record an actual payment transaction so it appears in Payment Slips List.
-      await api.post('/payments/', {
-        invoice: inv.id,
-        payment_mode: paymentMode,
-        amount: total.toFixed(2),
-        status: 'success',
-      })
+      // For credit slips, keep amount due and skip payment entry.
+      if (paymentMode !== 'credit') {
+        await api.post('/payments/', {
+          invoice: inv.id,
+          payment_mode: paymentMode,
+          amount: total.toFixed(2),
+          status: 'success',
+        })
+      }
 
       setInvoice({ 
         ...inv, 
@@ -4444,11 +4479,11 @@ function PaymentSlipSection() {
           first_name: newPt.name.split(' ')[0], 
           last_name: newPt.name.split(' ').slice(1).join(' '), 
           phone: newPt.phone 
-        }, 
-        paymentMode, subtotal, discountAmt, total, referredBy, purpose 
+        },
+        paymentMode, subtotal, discountAmt, total, referredBy, purpose, linkedAdmission
       })
       toast.success(`Invoice ${inv.invoice_no} created!`)
-      toast.success('Payment slip recorded successfully!')
+      toast.success(paymentMode === 'credit' ? 'Credit slip generated successfully!' : 'Payment slip recorded successfully!')
     } catch (err) {
       toast.error(err.response?.data?.detail || JSON.stringify(err.response?.data) || 'Failed to create invoice')
     } finally { setSubmitting(false) }
@@ -4474,7 +4509,13 @@ function PaymentSlipSection() {
     const gender = invoice.patient.gender ? (invoice.patient.gender === 'male' ? 'Male' : invoice.patient.gender === 'female' ? 'Female' : 'Other') : ''
     const age = invoice.patient.age ? invoice.patient.age : ''
     const genderAge = [gender, age].filter(Boolean).join(' / ')
-    const payModeLabel = invoice.paymentMode === 'cash' ? 'Cash Payment' : invoice.paymentMode === 'card' ? 'Card Payment' : 'UPI Payment'
+    const payModeLabel = invoice.paymentMode === 'cash'
+      ? 'Cash Payment'
+      : invoice.paymentMode === 'card'
+        ? 'Card Payment'
+        : invoice.paymentMode === 'upi'
+          ? 'UPI Payment'
+          : 'Credit / Due'
 
     const rows = (invoice.items || []).map((it, i) =>
       `<tr>
@@ -4601,6 +4642,11 @@ function PaymentSlipSection() {
         border-radius: 4px;
         letter-spacing: 2px;
       }
+      .due-box {
+        border: 2px solid #b45309;
+        color: #b45309;
+        background: #fffbeb;
+      }
     </style>
     </head><body>
     <div class="slip">
@@ -4683,7 +4729,7 @@ function PaymentSlipSection() {
           <strong>Note:</strong> Your reports will be preserved only for 6 months.<br/>
           Please retain this receipt for future reference.
         </div>
-        <div class="paid-box">✓ PAID</div>
+        <div class="paid-box ${invoice.paymentMode === 'credit' ? 'due-box' : ''}">${invoice.paymentMode === 'credit' ? 'CREDIT / DUE' : '✓ PAID'}</div>
       </div>
 
     </div>
@@ -4735,6 +4781,11 @@ function PaymentSlipSection() {
               <div>
                 <p className="text-sm font-semibold text-gray-900">{[invoice.patient.first_name, invoice.patient.last_name].filter(Boolean).join(' ')}</p>
                 <p className="text-xs text-gray-400">{invoice.patient.uhid} · {invoice.patient.phone || 'No phone'}</p>
+                {invoice.linkedAdmission && (
+                  <p className="text-[10px] font-bold text-blue-700 mt-0.5">
+                    IPD Active · Bed {invoice.linkedAdmission?.bed_code || '--'}
+                  </p>
+                )}
               </div>
             </div>
             <table className="w-full text-xs">
@@ -4763,7 +4814,9 @@ function PaymentSlipSection() {
             </table>
             <div className="flex items-center justify-between pt-1 border-t border-gray-100">
               <span className="text-xs text-gray-500 capitalize"><CreditCard size={12} className="inline mr-1 text-emerald-600" />{invoice.paymentMode}</span>
-              <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold">PAID</span>
+              <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-semibold ${invoice.paymentMode === 'credit' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                {invoice.paymentMode === 'credit' ? 'CREDIT / DUE' : 'PAID'}
+              </span>
             </div>
           </div>
         </div>
@@ -4784,6 +4837,11 @@ function PaymentSlipSection() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{[patient.first_name, patient.last_name].filter(Boolean).join(' ')}</p>
                     <p className="text-xs text-gray-400">{patient.uhid} · {patient.phone || 'No phone'}</p>
+                    {activeIpdByPatient[String(patient.id)] && (
+                      <p className="text-[10px] font-bold text-blue-700 mt-0.5">
+                        IPD Active · Bed {activeIpdByPatient[String(patient.id)]?.bed_code || '--'}
+                      </p>
+                    )}
                   </div>
                   <button type="button" onClick={() => setPatient(null)} className="text-gray-300 hover:text-red-500">
                     <XCircle size={16} strokeWidth={1.8} />
@@ -4817,7 +4875,14 @@ function PaymentSlipSection() {
                         <li key={p.id}>
                           <button type="button" onClick={() => { setPatient(p); setPtSearch(''); setPtResults([]) }}
                             className="w-full text-left px-3 py-2 hover:bg-emerald-50/60">
-                            <p className="text-sm font-medium text-gray-900">{[p.first_name, p.last_name].filter(Boolean).join(' ')}</p>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-gray-900 truncate">{[p.first_name, p.last_name].filter(Boolean).join(' ')}</p>
+                              {activeIpdByPatient[String(p.id)] && (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 whitespace-nowrap">
+                                  IPD ACTIVE
+                                </span>
+                              )}
+                            </div>
                             <p className="text-xs text-gray-400">{p.uhid} · {p.phone || 'No phone'}</p>
                           </button>
                         </li>
@@ -4911,7 +4976,12 @@ function PaymentSlipSection() {
                 <div>
                   <label className="text-[11px] font-medium text-gray-400 block mb-1">Payment mode</label>
                   <div className="flex gap-1.5">
-                    {[['cash','Cash'],['card','Card'],['upi','UPI']].map(([v,l]) => (
+                    {[
+                      ['cash', 'Cash'],
+                      ['card', 'Card'],
+                      ['upi', 'UPI'],
+                      ...(selectedPatientHasActiveIpd ? [['credit', 'Credit']] : []),
+                    ].map(([v,l]) => (
                       <button key={v} type="button" onClick={() => setPaymentMode(v)}
                         className={`flex-1 py-1.5 rounded-lg border text-xs font-medium transition-colors ${paymentMode === v ? 'bg-emerald-600 text-white border-emerald-600' : 'border-gray-200 text-gray-600 hover:border-emerald-300'}`}>
                         {l}
@@ -6316,7 +6386,9 @@ function PrintMiniReceipt({ admission, data, type, onClose }) {
     }
   }, [])
 
-  const label     = type === 'advance' ? 'ADVANCE PAYMENT RECEIPT' : 'PAYMENT RECEIPT'
+  const label     = type === 'advance'
+    ? (data.mode === 'credit' ? 'ADVANCE CREDIT SLIP' : 'ADVANCE PAYMENT RECEIPT')
+    : 'PAYMENT RECEIPT'
   const modeLabel = { cash: 'Cash', upi: 'UPI / Online Transfer', credit: 'Credit / Due', other: 'Other' }
   const isPaid    = data.mode !== 'credit'
   const now       = format(new Date(), 'd/M/yyyy (HH:mm)')
@@ -6554,9 +6626,19 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
       const { data } = await api.post(`/ipd-admissions/${admission.id}/capture-advance/`, {
         amount: advAmount, payment_mode: advMode, reference: advRef
       })
-      toast.success('Advance captured!')
+      toast.success(advMode === 'credit' ? 'Credit entry added' : 'Advance captured!')
       fetchLedger()
-      if (advPrint) setReceipt({ type: 'advance', data: { amount: advAmount, mode: advMode, invoice_no: data.invoice_no, description: 'Advance Payment' } })
+      if (advPrint) {
+        setReceipt({
+          type: 'advance',
+          data: {
+            amount: advAmount,
+            mode: advMode,
+            invoice_no: data.invoice_no,
+            description: advMode === 'credit' ? 'Advance (Credit / Due)' : 'Advance Payment'
+          }
+        })
+      }
       setAdvAmount(''); setAdvRef('')
     } catch { toast.error('Failed to capture advance') }
     finally { setSubmitting(false) }
@@ -6895,7 +6977,8 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                       {[...ledger.charges, ...ledger.payments]
                         .sort((a, b) => new Date(a.date) - new Date(b.date))
                         .map((item, i) => {
-                          const isDiscount = item.type !== 'payment' && parseFloat(item.amount) < 0
+                          const isPayment = item.type === 'payment' || item.type === 'pharmacy_payment'
+                          const isDiscount = !isPayment && parseFloat(item.amount) < 0
                           return (
                             <tr key={`${item.type}-${item.id}-${i}`} className={`hover:bg-gray-50/80 transition-colors ${isDiscount ? 'bg-amber-50/40' : ''}`}>
                               <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">{format(new Date(item.date), 'd/M/yy HH:mm')}</td>
@@ -6903,13 +6986,13 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {item.type === 'room_rent'  && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold">RENT</span>}
                                   {isDiscount                 && <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold">DISCOUNT</span>}
-                                  <span className={`text-xs font-semibold ${item.type === 'payment' ? 'text-emerald-700' : isDiscount ? 'text-amber-700' : 'text-gray-800'}`}>
+                                  <span className={`text-xs font-semibold ${isPayment ? 'text-emerald-700' : isDiscount ? 'text-amber-700' : 'text-gray-800'}`}>
                                     {item.description}
                                   </span>
                                 </div>
                               </td>
                               <td className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
-                                {item.type === 'payment' ? (
+                                {isPayment ? (
                                   <span className="text-gray-300">—</span>
                                 ) : (editingLedgerId === item.id && item.type !== 'room_rent') ? (
                                   <div className="flex items-center justify-end gap-1">
@@ -6950,7 +7033,7 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-right font-medium text-emerald-600 whitespace-nowrap">
-                                {item.type === 'payment'
+                                {isPayment
                                   ? parseFloat(item.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })
                                   : <span className="text-gray-300">—</span>}
                               </td>
@@ -7005,8 +7088,8 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                       </div>
                       <div>
                         <label className="text-[10px] font-bold text-gray-500 uppercase">Payment Mode *</label>
-                        <div className="grid grid-cols-3 gap-2 mt-1">
-                          {['cash', 'upi', 'other'].map(m => (
+                        <div className="grid grid-cols-4 gap-2 mt-1">
+                          {['cash', 'upi', 'other', 'credit'].map(m => (
                             <button key={m} type="button" onClick={() => setAdvMode(m)}
                               className={`py-2 rounded-xl text-xs font-bold border transition-colors capitalize ${advMode === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-emerald-400'}`}>
                               {m}
@@ -7026,7 +7109,7 @@ function AdmissionLedgerModal({ admission, onClose, autoDischarge = false, onDis
                       </label>
                       <button type="submit" disabled={submitting}
                         className="w-full py-3 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-sm text-sm">
-                        {submitting ? 'Processing…' : <><IndianRupee size={16} /> Capture Advance</>}
+                        {submitting ? 'Processing…' : <><IndianRupee size={16} /> {advMode === 'credit' ? 'Add Credit Entry' : 'Capture Advance'}</>}
                       </button>
                     </form>
                   )}
@@ -7178,10 +7261,10 @@ function PrintIpdLedger({ admission, ledger, onClose }) {
                 <td className="py-2.5 text-xs text-gray-600">{format(new Date(item.date), 'd/M/yy')}</td>
                 <td className="py-2.5 text-sm">{item.description}</td>
                 <td className="py-2.5 text-right font-medium">
-                  {item.type !== 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                  {(item.type !== 'payment' && item.type !== 'pharmacy_payment') ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
                 </td>
                 <td className="py-2.5 text-right font-medium">
-                  {item.type === 'payment' ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
+                  {(item.type === 'payment' || item.type === 'pharmacy_payment') ? parseFloat(item.amount).toLocaleString('en-IN', {minimumFractionDigits:2}) : ''}
                 </td>
               </tr>
             ))}

@@ -2,6 +2,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -15,6 +16,7 @@ from apps.beds.models import Bed
 from apps.billing.models import BillingInvoice, InvoiceItem, InvoiceNumberSequence
 from apps.payments.models import PaymentTransaction
 from apps.payments.serializers import PaymentTransactionSerializer
+from apps.pharmacy.models import PharmacyInvoice
 from apps.roles_permissions.permissions import HasRequiredPermission
 from apps.auditlogs.services import create_audit_log
 from apps.shared.response import success_response
@@ -30,6 +32,14 @@ def _release_bed(bed_code: str, hospital_id):
     """Mark a bed as CLEANING (ready to be cleaned before next use)."""
     if bed_code:
         Bed.objects.filter(bed_code=bed_code, hospital_id=hospital_id).update(status=Bed.Status.CLEANING)
+        # Auto-create/refresh cleaning task for housekeeping workflow.
+        from apps.beds.services import ensure_cleaning_task_for_bed
+
+        ensure_cleaning_task_for_bed(
+            bed_code=bed_code,
+            hospital_id=hospital_id,
+            notes="Auto-created from discharge/transfer.",
+        )
 
 
 class IPDAdmissionViewSet(viewsets.ModelViewSet):
@@ -245,18 +255,39 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
     def ledger(self, request, pk=None):
         """Calculate running IPD ledger including dynamic room rent."""
         admission = self.get_object()
+        stay_end_date = (
+            admission.discharged_at.date()
+            if admission.status in (IPDAdmission.Status.DISCHARGED, IPDAdmission.Status.CANCELLED) and admission.discharged_at
+            else timezone.now().date()
+        )
         
-        # 1. Invoices (Charges - Excluding Advances)
+        # 1. Invoices (charges):
+        # Include directly linked invoices and also fallback IPD invoices/payments
+        # created for the same patient during this admission window.
         invoices = BillingInvoice.objects.filter(
-            ipd_admission=admission, status=BillingInvoice.Status.FINALIZED
-        ).exclude(invoice_no__startswith="IPDADV-").prefetch_related("items").order_by("-created_at")
+            status=BillingInvoice.Status.FINALIZED,
+        ).filter(
+            Q(ipd_admission=admission)
+            | Q(
+                ipd_admission__isnull=True,
+                encounter_type=BillingInvoice.EncounterType.IPD,
+                patient=admission.patient,
+                invoice_date__gte=admission.admission_date,
+                invoice_date__lte=stay_end_date,
+            )
+        ).prefetch_related("items").order_by("-created_at")
         
         record_charges = []
         invoices_total = Decimal("0.00")
         for inv in invoices:
+            # Paid advance invoices are deposits, not billable charges.
+            if inv.invoice_no.startswith("IPDADV-") and (inv.amount_paid or Decimal("0.00")) > Decimal("0.00"):
+                continue
             invoices_total += inv.total_amount
             items = list(inv.items.all())
             desc = items[0].description if len(items) == 1 else f"{len(items)} items"
+            if inv.invoice_no.startswith("IPDADV-") and (inv.amount_paid or Decimal("0.00")) == Decimal("0.00"):
+                desc = "Advance (Credit / Due)"
             record_charges.append({
                 "id": str(inv.id),
                 "type": "charge",
@@ -265,6 +296,46 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "amount": str(inv.total_amount),
                 "invoice_no": inv.invoice_no
             })
+
+        pharmacy_invoices = PharmacyInvoice.objects.filter(
+            ipd_admission=admission,
+            status=PharmacyInvoice.Status.FINALIZED,
+        ).order_by("-created_at")
+        pharmacy_total = Decimal("0.00")
+        pharmacy_paid = Decimal("0.00")
+        pharmacy_payment_rows = []
+        for pinv in pharmacy_invoices:
+            grand_total = pinv.grand_total or Decimal("0.00")
+            method = (pinv.payment_method or "cash").lower()
+            if method == "credit":
+                paid_amount = max(Decimal("0.00"), pinv.paid_amount or Decimal("0.00"))
+                # Guard against accidental overpayment values.
+                paid_amount = min(paid_amount, grand_total)
+            else:
+                paid_amount = grand_total
+            pharmacy_total += grand_total
+            pharmacy_paid += paid_amount
+            record_charges.append(
+                {
+                    "id": f"pharmacy-{pinv.id}",
+                    "type": "pharmacy_charge",
+                    "date": pinv.created_at.isoformat(),
+                    "description": f"Pharmacy Invoice ({(pinv.payment_method or 'cash').upper()})",
+                    "amount": str(grand_total),
+                    "invoice_no": pinv.invoice_no,
+                }
+            )
+            if paid_amount > 0:
+                pharmacy_payment_rows.append(
+                    {
+                        "id": f"pharmacy-paid-{pinv.id}",
+                        "type": "pharmacy_payment",
+                        "date": pinv.created_at.isoformat(),
+                        "description": f"Pharmacy Paid - {pinv.payment_method.upper()}",
+                        "amount": str(paid_amount),
+                        "invoice_no": pinv.invoice_no,
+                    }
+                )
             
         # 2. Dynamic Room Rent
         room_rent = Decimal("0.00")
@@ -286,11 +357,18 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "invoice_no": "SYSTEM"
             })
             
-        total_charges = invoices_total + room_rent
+        total_charges = invoices_total + room_rent + pharmacy_total
         
         # 3. Payments
         payments = PaymentTransaction.objects.filter(
-            invoice__ipd_admission=admission,
+            Q(invoice__ipd_admission=admission)
+            | Q(
+                invoice__ipd_admission__isnull=True,
+                invoice__encounter_type=BillingInvoice.EncounterType.IPD,
+                invoice__patient=admission.patient,
+                invoice__invoice_date__gte=admission.admission_date,
+                invoice__invoice_date__lte=stay_end_date,
+            ),
             status=PaymentTransaction.Status.SUCCESS
         ).select_related("invoice").order_by("-created_at")
         
@@ -307,6 +385,9 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
                 "amount": str(p.amount),
                 "invoice_no": p.invoice.invoice_no
             })
+        # Include pharmacy payments in totals so statement math stays consistent.
+        total_paid += pharmacy_paid
+        record_payments.extend(pharmacy_payment_rows)
             
         balance_due = total_charges - total_paid
 
@@ -326,7 +407,7 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         """Create an advance invoice and payment for this admission."""
         admission = self.get_object()
         amount_str = request.data.get("amount")
-        mode = request.data.get("payment_mode", "cash")
+        mode = (request.data.get("payment_mode", "cash") or "cash").lower()
         ref = request.data.get("reference", "")
 
         if not amount_str:
@@ -351,6 +432,11 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
         slug_part = (hospital.slug or hospital.name or "HOSP")[:5].upper()
         invoice_no = f"IPDADV-{slug_part}-{year}-{seq.last_seq:04d}"
 
+        allowed_modes = {"cash", "upi", "other", "credit"}
+        if mode not in allowed_modes:
+            mode = "cash"
+        is_credit = mode == "credit"
+
         # 2. Create Invoice
         invoice = BillingInvoice.objects.create(
             hospital_id=hospital_id,
@@ -361,7 +447,7 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             status=BillingInvoice.Status.FINALIZED,
             subtotal_amount=amount,
             total_amount=amount,
-            amount_paid=amount,
+            amount_paid=Decimal("0.00") if is_credit else amount,
             currency="INR",
             invoice_date=timezone.now().date()
         )
@@ -374,22 +460,25 @@ class IPDAdmissionViewSet(viewsets.ModelViewSet):
             line_total=amount
         )
 
-        # 3. Create Payment
-        payment = PaymentTransaction.objects.create(
-            hospital_id=hospital_id,
-            invoice=invoice,
-            payment_mode=mode,
-            amount=amount,
-            transaction_reference=ref,
-            status=PaymentTransaction.Status.SUCCESS,
-            collected_by=request.user,
-            paid_at=timezone.now()
-        )
+        # 3. Create Payment (only for non-credit entries)
+        payment = None
+        if not is_credit:
+            payment = PaymentTransaction.objects.create(
+                hospital_id=hospital_id,
+                invoice=invoice,
+                payment_mode=mode,
+                amount=amount,
+                transaction_reference=ref,
+                status=PaymentTransaction.Status.SUCCESS,
+                collected_by=request.user,
+                paid_at=timezone.now()
+            )
 
         return Response({
             "success": True,
             "invoice_no": invoice.invoice_no,
-            "payment": PaymentTransactionSerializer(payment).data
+            "is_credit": is_credit,
+            "payment": PaymentTransactionSerializer(payment).data if payment else None
         })
 
     @action(detail=True, methods=["post"], url_path="add-charge")

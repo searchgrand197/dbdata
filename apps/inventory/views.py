@@ -263,6 +263,7 @@ class MedicineViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
                             "batch_no": b.batch_no,
                             "expiry_date": b.expiry_date.isoformat() if b.expiry_date else None,
                             "mrp": str(b.mrp),
+                            "unit_cost": str(b.unit_cost),
                             "sale_rate": str(b.sale_rate),
                             "stock": stock,
                         },

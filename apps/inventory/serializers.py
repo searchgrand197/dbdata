@@ -115,9 +115,12 @@ class MedicineBatchSerializer(serializers.ModelSerializer):
 
 
 class MedicineBatchCreateUpdateSerializer(serializers.ModelSerializer):
+    """Create/update: include id on response so clients can chain stock-ledgers and other calls."""
+
     class Meta:
         model = MedicineBatch
-        fields = ["medicine", "batch_no", "expiry_date", "mfg_date", "unit_cost", "mrp", "sale_rate"]
+        fields = ["id", "medicine", "batch_no", "expiry_date", "mfg_date", "unit_cost", "mrp", "sale_rate"]
+        read_only_fields = ["id"]
 
 
 class MedicineBatchRatesUpdateSerializer(serializers.ModelSerializer):

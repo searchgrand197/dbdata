@@ -8,6 +8,7 @@ import {
   DEFAULT_OUTLET_GST_PERCENT,
   formatStockDual,
   formatStripsAndTablets,
+  lineDiscountRupeesFromPercent,
   parseOutletDefaultGstPercent,
   resolveEffectiveGstPercent,
   splitGstEqually,
@@ -122,6 +123,20 @@ describe('splitGstEqually', () => {
   })
 })
 
+describe('lineDiscountRupeesFromPercent', () => {
+  it('converts percent of line base to rupees when no batch MRP', () => {
+    expect(lineDiscountRupeesFromPercent({ qty: 1, rate: 100, line_discount: 5 })).toBe(5)
+    expect(lineDiscountRupeesFromPercent({ qty: 2, rate: 100, line_discount: 5 })).toBe(10)
+    expect(lineDiscountRupeesFromPercent({ qty: 1, rate: 100, line_discount: 0 })).toBe(0)
+    expect(lineDiscountRupeesFromPercent({ qty: 1, rate: 100, line_discount: 100 })).toBe(100)
+  })
+  it('uses MRP − rate per qty when batch MRP is set (line_discount ignored for ₹)', () => {
+    expect(
+      lineDiscountRupeesFromPercent({ qty: 3, rate: 2.5, batch: { mrp: 3 }, line_discount: 0 }),
+    ).toBe(1.5)
+  })
+})
+
 describe('computeSaleGstTotals', () => {
   it('uses product GST when row blank', () => {
     const t = computeSaleGstTotals(
@@ -143,6 +158,34 @@ describe('computeSaleGstTotals', () => {
     expect(t.sgst).toBe(0)
     expect(t.grandTotal).toBe(95)
     expect(t.taxableSubtotal).toBe(95)
+  })
+  it('non-GST: no MRP row — % off qty×rate (3×2.5, 16%) → 6.30', () => {
+    const t = computeSaleGstTotals(
+      [{ medicine: { id: 1 }, qty: 3, rate: 2.5, gst_type: 'exclusive', no_gst: true, line_discount: 16 }],
+      5,
+      false,
+    )
+    expect(t.grandTotal).toBe(6.3)
+    expect(t.taxableSubtotal).toBe(6.3)
+  })
+  it('non-GST: batch MRP — list 3×3 minus markdown 3×(3−2.5) → 7.50', () => {
+    const t = computeSaleGstTotals(
+      [
+        {
+          medicine: { id: 1 },
+          batch: { mrp: 3 },
+          qty: 3,
+          rate: 2.5,
+          gst_type: 'exclusive',
+          no_gst: true,
+          line_discount: 16,
+        },
+      ],
+      5,
+      false,
+    )
+    expect(t.grandTotal).toBe(7.5)
+    expect(t.taxableSubtotal).toBe(7.5)
   })
 })
 

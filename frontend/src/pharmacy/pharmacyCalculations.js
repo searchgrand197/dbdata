@@ -99,7 +99,41 @@ export function computeMargGstOnBase({
 }
 
 /**
- * Billing grid: one row = qty × rate as base; per-line GST + optional line_discount.
+ * List-side line value before trade discount: qty × batch MRP when MRP exists (same unit as rate),
+ * else qty × rate (no MRP on row).
+ */
+export function lineSaleBaseAmount(row) {
+  const q = Number(row?.qty) || 0
+  if (q <= 0) return 0
+  const mrp = Number(row?.batch?.mrp)
+  if (Number.isFinite(mrp) && mrp > 0) {
+    return Math.round(q * mrp * 100) / 100
+  }
+  const rate = Number(row?.rate) || 0
+  return Math.round(q * rate * 100) / 100
+}
+
+/**
+ * Trade discount in ₹: when batch MRP exists, markdown from list to selling = qty × (MRP − rate).
+ * Otherwise `line_discount` is % of (qty × rate).
+ */
+export function lineDiscountRupeesFromPercent(row) {
+  const q = Number(row?.qty) || 0
+  if (q <= 0) return 0
+  const mrp = Number(row?.batch?.mrp)
+  if (Number.isFinite(mrp) && mrp > 0) {
+    const rate = Number(row?.rate) || 0
+    const markdown = (mrp - rate) * q
+    return Math.round(Math.max(0, markdown) * 100) / 100
+  }
+  const base = Math.round(q * (Number(row?.rate) || 0) * 100) / 100
+  const pct = Math.min(100, Math.max(0, Number(row?.line_discount) || 0))
+  return Math.round((base * pct) / 100 * 100) / 100
+}
+
+/**
+ * Billing grid: per-line GST + trade discount. With batch MRP, base = qty×MRP and discount = qty×(MRP−rate);
+ * without MRP, base = qty×rate and discount = line_discount % of that base.
  * @param {boolean} [invoiceGstEnabled=true] — false = non-GST bill (no tax, final = base − discount).
  */
 export function computeSaleGstTotals(
@@ -114,10 +148,9 @@ export function computeSaleGstTotals(
   for (const r of rows) {
     if (!r?.medicine) continue
     const q = Number(r.qty) || 0
-    const rate = Number(r.rate) || 0
     if (q <= 0) continue
-    const base = q * rate
-    const disc = Number(r.line_discount) || 0
+    const base = lineSaleBaseAmount(r)
+    const disc = lineDiscountRupeesFromPercent(r)
     if (!invoiceGstEnabled) {
       const m = computeMargGstOnBase({
         baseAmount: base,

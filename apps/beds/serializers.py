@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.beds.models import Bed, BedRoom, Floor
+from apps.beds.models import Bed, BedCleaningTask, BedRoom, Floor
 
 
 class BedSerializer(serializers.ModelSerializer):
@@ -137,3 +137,33 @@ class BedStatusUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Bed
         fields = ["status", "notes"]
+
+
+class BedCleaningTaskSerializer(serializers.ModelSerializer):
+    bed_code = serializers.CharField(source="bed.bed_code", read_only=True)
+    bed_room = serializers.CharField(source="bed.room.name", read_only=True)
+    assigned_staff_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BedCleaningTask
+        fields = [
+            "id",
+            "hospital",
+            "bed",
+            "bed_code",
+            "bed_room",
+            "assigned_staff",
+            "assigned_staff_name",
+            "status",
+            "notes",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["hospital", "started_at", "completed_at", "created_at", "updated_at"]
+
+    def get_assigned_staff_name(self, obj):
+        if not obj.assigned_staff_id:
+            return ""
+        return f"{obj.assigned_staff.first_name} {obj.assigned_staff.last_name}".strip() or obj.assigned_staff.employee_code

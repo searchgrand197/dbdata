@@ -34,7 +34,7 @@ urlpatterns = [
         {"document_root": settings.BASE_DIR / "frontend" / "dist" / "assets"},
     ),
     re_path(
-        r"^(?P<path>(favicon\.svg|icons\.svg|hero-3d\.png|manifest\.json|sw\.js|offline\.html))$",
+        r"^(?P<path>(favicon\.svg|icons\.svg|hero-3d\.png|manifest\.json|manifest-doctor\.json|manifest-staff\.json|manifest-pharmacy\.json|manifest-receptionist\.json|sw\.js|offline\.html))$",
         static_serve,
         {"document_root": settings.BASE_DIR / "frontend" / "dist"},
     ),
@@ -79,7 +79,7 @@ urlpatterns = [
     path("", include("apps.opd_templates.urls")),
     # SPA fallback: direct browser refresh/open for frontend routes should load index.html
     re_path(
-        r"^(?!api/|admin/|media/|static/|leave/|ui/|template/|icons/|sw\.js|manifest\.json|offline\.html).*$",
+        r"^(?!api/|admin/|media/|static/|leave/|ui/|template/|icons/|sw\.js|manifest\.json|manifest-doctor\.json|manifest-staff\.json|manifest-pharmacy\.json|manifest-receptionist\.json|offline\.html).*$",
         frontend_index,
         name="frontend-spa-fallback",
     ),

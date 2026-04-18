@@ -1,4 +1,5 @@
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from decimal import Decimal
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django_filters.rest_framework import DjangoFilterBackend
@@ -101,18 +102,57 @@ class PharmacyInvoiceViewSet(viewsets.ModelViewSet):
     queryset = PharmacyInvoice.objects.all().order_by("-created_at")
     serializer_class = PharmacyInvoiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [SearchFilter]
+    search_fields = ["invoice_no", "patient__first_name", "patient__last_name", "patient__uhid"]
 
     def get_queryset(self):
-        return super().get_queryset().filter(hospital=self.request.user.hospital)
+        qs = super().get_queryset().filter(hospital=self.request.user.hospital)
+        patient_id = self.request.query_params.get("patient")
+        ipd_admission = self.request.query_params.get("ipd_admission")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        if ipd_admission:
+            qs = qs.filter(ipd_admission_id=ipd_admission)
+        return qs
 
     def perform_create(self, serializer):
         hospital = self.request.user.hospital
         raw = (serializer.validated_data.get("invoice_no") or "").strip()
-        if raw:
+        if raw and not PharmacyInvoice.objects.filter(invoice_no=raw).exists():
             invoice_no = raw
         else:
             invoice_no = next_pharmacy_invoice_number(hospital.id)
-        serializer.save(hospital=hospital, created_by=self.request.user, invoice_no=invoice_no)
+            while PharmacyInvoice.objects.filter(invoice_no=invoice_no).exists():
+                invoice_no = next_pharmacy_invoice_number(hospital.id)
+        payment_method = (serializer.validated_data.get("payment_method") or "cash").lower()
+        grand_total = serializer.validated_data.get("grand_total") or Decimal("0.00")
+        paid_amount = serializer.validated_data.get("paid_amount")
+        if payment_method == "credit":
+            paid_amount = Decimal("0.00")
+        elif paid_amount is None:
+            paid_amount = grand_total
+        for _ in range(3):
+            try:
+                serializer.save(
+                    hospital=hospital,
+                    created_by=self.request.user,
+                    invoice_no=invoice_no,
+                    payment_method=payment_method,
+                    paid_amount=paid_amount,
+                )
+                return
+            except IntegrityError:
+                invoice_no = next_pharmacy_invoice_number(hospital.id)
+                while PharmacyInvoice.objects.filter(invoice_no=invoice_no).exists():
+                    invoice_no = next_pharmacy_invoice_number(hospital.id)
+        # If all retries fail, bubble up the final DB integrity error.
+        serializer.save(
+            hospital=hospital,
+            created_by=self.request.user,
+            invoice_no=invoice_no,
+            payment_method=payment_method,
+            paid_amount=paid_amount,
+        )
 
 
 class PharmacyInvoiceItemViewSet(viewsets.ModelViewSet):

@@ -2,10 +2,12 @@ import React, { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { Search, Trash2 } from 'lucide-react'
 import api from '../api'
 import toast from 'react-hot-toast'
-import { format } from 'date-fns'
+import { format, isValid, parseISO } from 'date-fns'
 import {
   computeMargGstOnBase,
   computeSaleGstTotals,
+  lineDiscountRupeesFromPercent,
+  lineSaleBaseAmount,
   parseApiError,
   parseOutletDefaultGstPercent,
   resolveEffectiveGstPercent,
@@ -48,12 +50,45 @@ const RupeesCell = memo(function RupeesCell({ value }) {
 function safeFormat(dateVal, fmtStr) {
   if (!dateVal) return '--/--'
   try {
-    const d = new Date(dateVal)
-    if (isNaN(d.getTime())) return '--/--'
+    let d
+    if (typeof dateVal === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateVal.trim())) {
+      d = parseISO(dateVal.trim().slice(0, 10))
+    } else {
+      d = new Date(dateVal)
+    }
+    if (!isValid(d)) return '--/--'
     return format(d, fmtStr)
   } catch {
     return '--/--'
   }
+}
+
+function formatStockAsStripsAndTablets(stock, pick) {
+  const qty = Number(stock)
+  if (!Number.isFinite(qty) || qty <= 0) return '0 tab'
+  const stripSize =
+    Number(pick?.medicine?.pack_size) ||
+    Number(pick?.medicine?.unit_conversions?.strip) ||
+    Number(pick?.medicine?.unit_conversions?.STRIP) ||
+    0
+  if (!(stripSize > 0)) {
+    return qty % 1 === 0 ? `${qty} tab` : `${qty.toFixed(2)} tab`
+  }
+  const strips = Math.floor(qty / stripSize)
+  const tabs = qty - strips * stripSize
+  if (tabs <= 0) return `${strips} strip${strips === 1 ? '' : 's'}`
+  const tabText = tabs % 1 === 0 ? String(tabs) : Number(tabs.toFixed(2)).toString()
+  return `${strips} strip${strips === 1 ? '' : 's'} + ${tabText} tab`
+}
+
+/** Discount % between batch MRP and selling rate: ((MRP − rate) / MRP) × 100, rounded to 2 decimals. */
+function discountPercentFromMrpAndRate(mrp, rate) {
+  const m = Number(mrp) || 0
+  const rt = Number(rate) || 0
+  if (!(m > 0)) return 0
+  const raw = ((m - rt) / m) * 100
+  if (!Number.isFinite(raw)) return 0
+  return Math.min(100, Math.max(0, Math.round(raw * 100) / 100))
 }
 
 function createNewRow() {
@@ -73,6 +108,7 @@ function createNewRow() {
     gst_type: 'exclusive',
     no_gst: false,
     line_discount: 0,
+    discount_user_set: false,
     expiry_status: null,
   }
 }
@@ -132,12 +168,19 @@ const SearchHitRow = memo(function SearchHitRow({ pick, disabled, onPick }) {
         <div className="font-semibold text-[12px] uppercase text-slate-900 truncate">{pick.medicine.name}</div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-600">
           <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded">Batch {pick.batch.batch_no}</span>
-          <span className="font-medium">Exp {safeFormat(pick.batch.expiry_date, 'MM/yy')}</span>
+          <span className="bg-violet-50 text-violet-700 border border-violet-100 px-1.5 py-0.5 rounded">
+            Category {pick.medicine.form || '—'}
+          </span>
+          <span className="font-medium whitespace-nowrap">
+            Exp {safeFormat(pick.batch.expiry_date, 'dd/MM/yyyy')}
+          </span>
+        </div>
+        <div className="mt-0.5 text-[10px] font-semibold text-emerald-800 tabular-nums">
+          Qty available (inventory): {formatStockAsStripsAndTablets(pick.batch?.stock, pick)}
         </div>
       </div>
       <div className="shrink-0 flex flex-col items-end gap-1">
         {badge}
-        <span className="text-[10px] tabular-nums text-slate-700">Stock {Number(pick.batch.stock).toFixed(0)}</span>
         <span className="text-[12px] font-semibold tabular-nums text-blue-700">₹{Number(pick.batch.sale_rate).toFixed(2)}</span>
       </div>
     </button>
@@ -169,11 +212,18 @@ function ErpBillingViewInner({
   const debouncedPSearch = useDebouncedValue(pSearch, 260)
   const [searchResults, setSearchResults] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
+  /** When set, this row shows product search to replace medicine/batch (same row id). */
+  const [replacingRowId, setReplacingRowId] = useState(null)
   const [gstEnabled, setGstEnabled] = useState(false)
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(defaultInvoiceDate)
   const [invoiceTime, setInvoiceTime] = useState(defaultInvoiceTime)
   const [allowExpiredSale, setAllowExpiredSale] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [paidAmount, setPaidAmount] = useState('')
+  const [billDiscountPercent, setBillDiscountPercent] = useState('')
+  const [linkedAdmission, setLinkedAdmission] = useState(null)
+  const [activeAdmissionByPatientId, setActiveAdmissionByPatientId] = useState({})
 
   const productRefs = useRef({})
   const packRefs = useRef({})
@@ -199,16 +249,34 @@ function ErpBillingViewInner({
   React.useEffect(() => {
     if (debouncedPtSearch.length <= 2) {
       setPtResults([])
+      setActiveAdmissionByPatientId({})
       return
     }
     let cancelled = false
-    api
-      .get(`/patients/?search=${encodeURIComponent(debouncedPtSearch)}&limit=8`)
-      .then((res) => {
-        if (!cancelled) setPtResults(res.data?.data || res.data?.results || [])
+    Promise.all([
+      api.get(`/patients/?search=${encodeURIComponent(debouncedPtSearch)}&limit=8`),
+      api.get('/ipd-admissions/?status=admitted&limit=500').catch(() => ({ data: [] })),
+    ])
+      .then(([ptRes, adRes]) => {
+        if (cancelled) return
+        const pts = ptRes.data?.data || ptRes.data?.results || []
+        setPtResults(pts)
+        const admissions = adRes.data?.data || adRes.data?.results || []
+        const amap = {}
+        if (Array.isArray(admissions)) {
+          admissions.forEach((a) => {
+            if (a?.status === 'admitted' && a?.patient) {
+              amap[String(a.patient)] = a
+            }
+          })
+        }
+        setActiveAdmissionByPatientId(amap)
       })
       .catch(() => {
-        if (!cancelled) setPtResults([])
+        if (!cancelled) {
+          setPtResults([])
+          setActiveAdmissionByPatientId({})
+        }
       })
     return () => {
       cancelled = true
@@ -240,6 +308,30 @@ function ErpBillingViewInner({
     }
   }, [debouncedPSearch])
 
+  React.useEffect(() => {
+    if (!selectedPt?.id) {
+      setLinkedAdmission(null)
+      return
+    }
+    let cancelled = false
+    api
+      .get('/ipd-admissions/', { params: { status: 'admitted', limit: 500 } })
+      .then((res) => {
+        if (cancelled) return
+        const rows = res.data?.data || res.data?.results || []
+        const active = Array.isArray(rows)
+          ? rows.find((a) => String(a.patient) === String(selectedPt.id) && a.status === 'admitted')
+          : null
+        setLinkedAdmission(active || null)
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedAdmission(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedPt?.id])
+
   const defaultGst = parseOutletDefaultGstPercent(outletSettings?.default_gst_percent)
 
   const patchRowById = useCallback((rowId, partial) => {
@@ -253,29 +345,89 @@ function ErpBillingViewInner({
       if ('packs' in partial || 'loose' in partial || 'pack_size' in partial) {
         merged.qty = computeBaseQtyFromPacksLoose(merged.packs, merged.loose, merged.pack_size)
       }
+      const mrpNum = Number(merged.batch?.mrp)
+      const hasMrp = Number.isFinite(mrpNum) && mrpNum > 0 && merged.medicine
+      if (hasMrp) {
+        if ('line_discount' in partial) {
+          const p = Math.min(100, Math.max(0, Number(merged.line_discount) || 0))
+          merged.rate = Math.round(mrpNum * (1 - p / 100) * 100) / 100
+        } else if ('rate' in partial) {
+          merged.line_discount = discountPercentFromMrpAndRate(mrpNum, Number(merged.rate) || 0)
+        }
+      }
       const nr = [...prev]
       nr[ix] = merged
       return normalizeRows(nr, createNewRow)
     })
   }, [])
 
-  const updateRowById = useCallback(
-    (rowId, field, value) => {
-      patchRowById(rowId, { [field]: value })
-    },
-    [patchRowById],
-  )
-
   const { taxableSubtotal, gst, grandTotal, cgst, sgst } = useMemo(
     () => computeSaleGstTotals(rows, defaultGst, gstEnabled),
     [rows, defaultGst, gstEnabled],
   )
+  const billDiscountAmount = useMemo(() => {
+    const v = Number(billDiscountPercent)
+    if (!Number.isFinite(v) || v <= 0) return 0
+    const pct = Math.min(100, Math.max(0, v))
+    return Math.round((grandTotal * pct) / 100 * 100) / 100
+  }, [billDiscountPercent, grandTotal])
+  const netGrandTotal = useMemo(
+    () => Math.max(0, Math.round((grandTotal - billDiscountAmount) * 100) / 100),
+    [grandTotal, billDiscountAmount],
+  )
+
+  /** List-side gross: qty×MRP when batch has MRP, else qty×rate — matches billing base. */
+  const lineGrossTotal = useMemo(() => {
+    let gross = 0
+    for (const r of rows) {
+      if (!r?.medicine) continue
+      if (!(Number(r.qty) > 0)) continue
+      gross += lineSaleBaseAmount(r)
+    }
+    return Math.round(gross * 100) / 100
+  }, [rows])
+
+  React.useEffect(() => {
+    if (paymentMethod === 'credit' && linkedAdmission) {
+      setPaidAmount('0.00')
+      return
+    }
+    setPaidAmount(netGrandTotal.toFixed(2))
+  }, [paymentMethod, netGrandTotal, linkedAdmission])
+
+  React.useEffect(() => {
+    if (!linkedAdmission && paymentMethod === 'credit') {
+      setPaymentMethod('cash')
+    }
+  }, [linkedAdmission, paymentMethod])
+
+  React.useEffect(() => {
+    if (!replacingRowId) return
+    const t = window.setTimeout(() => {
+      productRefs.current[replacingRowId]?.focus()
+    }, 0)
+    return () => window.clearTimeout(t)
+  }, [replacingRowId])
+
+  React.useEffect(() => {
+    if (!replacingRowId) return
+    const ix = rows.findIndex((r) => r.id === replacingRowId)
+    if (ix < 0) {
+      setReplacingRowId(null)
+      return
+    }
+    if (activeRow !== ix) {
+      setReplacingRowId(null)
+      setPSearch('')
+      setSearchResults([])
+    }
+  }, [activeRow, rows, replacingRowId])
 
   const lineMarg = useMemo(() => {
     return rows.map((r) => {
       if (!r.medicine || !(Number(r.qty) > 0)) return null
-      const base = (Number(r.qty) || 0) * (Number(r.rate) || 0)
-      const disc = Number(r.line_discount) || 0
+      const base = lineSaleBaseAmount(r)
+      const disc = lineDiscountRupeesFromPercent(r)
       if (!gstEnabled) {
         return computeMargGstOnBase({
           baseAmount: base,
@@ -313,6 +465,7 @@ function ErpBillingViewInner({
         name: pick.medicine.name,
         sku: pick.medicine.sku,
         pack_info: pick.medicine.pack_info,
+        form: pick.medicine.form,
         hsn_code: pick.medicine.hsn_code,
         gst_percent: pick.medicine.gst_percent,
         unit_conversions: pick.medicine.unit_conversions,
@@ -324,12 +477,14 @@ function ErpBillingViewInner({
         batch_no: pick.batch.batch_no,
         expiry_date: pick.batch.expiry_date,
         mrp: pick.batch.mrp,
+        unit_cost: pick.batch.unit_cost,
         sale_rate: pick.batch.sale_rate,
         quantity: pick.batch.stock,
       }
       const ix = prev.findIndex((r) => r.id === rowId)
       if (ix < 0) return prev
       const packSize = Math.max(1, Number(pick.medicine.pack_size) || 1)
+      const saleRate = Number(b.sale_rate) || 0
       const merged = {
         ...prev[ix],
         medicine: m,
@@ -341,13 +496,16 @@ function ErpBillingViewInner({
         expiry_status: pick.expiry_status,
         hsn: m.hsn_code,
         pack: m.pack_info,
-        rate: Number(b.sale_rate) || 0,
+        rate: saleRate,
+        line_discount: discountPercentFromMrpAndRate(b.mrp, saleRate),
+        discount_user_set: false,
         gst_percent: m.gst_percent !== undefined && m.gst_percent !== null ? String(m.gst_percent) : '',
       }
       const nr = [...prev]
       nr[ix] = merged
       return normalizeRows(nr, createNewRow)
     })
+    setReplacingRowId(null)
     setPSearch('')
     setSearchResults([])
     setTimeout(() => packRefs.current[rowId]?.focus(), 50)
@@ -408,72 +566,105 @@ function ErpBillingViewInner({
       toast.error('No items')
       return
     }
+    if (paymentMethod !== 'credit') {
+      const paid = Number(paidAmount || 0)
+      if (Math.abs(paid - netGrandTotal) > 0.009) {
+        toast.error('For cash/upi/other, full amount must be paid')
+        return
+      }
+    }
 
+    let createdInvoice = null
     try {
       const { data: invData } = await api.post('/pharmacy/invoices/', {
         patient: selectedPt.id,
+        ipd_admission: linkedAdmission?.id || null,
         invoice_no: invoiceNo || undefined,
         date: invoiceDate || undefined,
         gst_enabled: gstEnabled,
         subtotal: taxableSubtotal.toFixed(2),
         cgst: cgst.toFixed(2),
         sgst: sgst.toFixed(2),
-        grand_total: grandTotal.toFixed(2),
+        grand_total: netGrandTotal.toFixed(2),
+        payment_method: paymentMethod,
+        paid_amount: paymentMethod === 'credit' ? '0.00' : netGrandTotal.toFixed(2),
         status: 'finalized',
       })
       const invoice = invData?.data || invData
+      createdInvoice = invoice
       const allowQ = allowExpiredSale ? { allow_expired: '1' } : {}
-      const itemResults = await Promise.all(
-        valid.map((r) => {
-          const base = (Number(r.qty) || 0) * (Number(r.rate) || 0)
-          const disc = Number(r.line_discount) || 0
-          let marg
-          let half = 0
-          if (!gstEnabled) {
-            marg = computeMargGstOnBase({
-              baseAmount: base,
-              discount: disc,
-              gstType: 'exclusive',
-              gstPercent: 0,
-              noGst: false,
-            })
-          } else {
-            const resolved = resolveEffectiveGstPercent({
-              rowGst: r.gst_percent,
-              productGst: r.medicine?.gst_percent,
-              defaultGst,
-              noGst: !!r.no_gst,
-            })
-            marg = computeMargGstOnBase({
-              baseAmount: base,
-              discount: disc,
-              gstType: r.gst_type,
-              gstPercent: resolved,
-              noGst: !!r.no_gst,
-            })
-            half = resolved / 2
-          }
-          return api.post(
-            '/pharmacy/items/',
-            {
-              invoice: invoice.id,
-              medicine: r.medicine.id,
-              batch: r.batch.id,
-              qty: r.qty,
-              mrp: r.batch?.mrp ?? 0,
-              rate: r.rate,
-              amount: marg.taxableAmount.toFixed(2),
-              cgst_rate: half.toFixed(2),
-              sgst_rate: half.toFixed(2),
-            },
-            { params: allowQ },
-          )
-        }),
-      )
+      const itemResults = []
+      for (const r of valid) {
+        const base = lineSaleBaseAmount(r)
+        const disc = lineDiscountRupeesFromPercent(r)
+        let marg
+        let half = 0
+        if (!gstEnabled) {
+          marg = computeMargGstOnBase({
+            baseAmount: base,
+            discount: disc,
+            gstType: 'exclusive',
+            gstPercent: 0,
+            noGst: false,
+          })
+        } else {
+          const resolved = resolveEffectiveGstPercent({
+            rowGst: r.gst_percent,
+            productGst: r.medicine?.gst_percent,
+            defaultGst,
+            noGst: !!r.no_gst,
+          })
+          marg = computeMargGstOnBase({
+            baseAmount: base,
+            discount: disc,
+            gstType: r.gst_type,
+            gstPercent: resolved,
+            noGst: !!r.no_gst,
+          })
+          half = resolved / 2
+        }
+        const posted = await api.post(
+          '/pharmacy/items/',
+          {
+            invoice: invoice.id,
+            medicine: r.medicine.id,
+            batch: r.batch.id,
+            qty: r.qty,
+            mrp: r.batch?.mrp ?? 0,
+            rate: r.rate,
+            amount: marg.taxableAmount.toFixed(2),
+            cgst_rate: half.toFixed(2),
+            sgst_rate: half.toFixed(2),
+          },
+          { params: allowQ },
+        )
+        itemResults.push(posted)
+      }
       const builtItems = itemResults.map((res, i) => {
         const saved = res.data?.data || res.data
         const r = valid[i]
-        return { ...r, ...saved, medicine: r.medicine, batch: r.batch }
+        const stripSize =
+          Math.max(
+            1,
+            Number(r.pack_size) ||
+              Number(r.medicine?.unit_conversions?.strip) ||
+              Number(r.medicine?.unit_conversions?.STRIP) ||
+              1,
+          )
+        const mrpUnit = Number(r.batch?.mrp || 0)
+        return {
+          ...r,
+          ...saved,
+          pack_size: r.pack_size,
+          strip_size_for_print: stripSize,
+          mrp_strip_for_print: Math.round(mrpUnit * stripSize * 100) / 100,
+          pack_info: r.pack || r.medicine?.pack_info || '',
+          medicine: {
+            ...r.medicine,
+            pack_info: r.pack || r.medicine?.pack_info || '',
+          },
+          batch: r.batch,
+        }
       })
       setPrintingInvoice({
         ...invoice,
@@ -483,23 +674,42 @@ function ErpBillingViewInner({
         subtotal: taxableSubtotal,
         cgst,
         sgst,
-        grand_total: grandTotal,
+        grand_total: netGrandTotal,
+        payment_method: paymentMethod,
+        paid_amount: paymentMethod === 'credit' ? 0 : netGrandTotal,
+        due_amount: paymentMethod === 'credit' ? netGrandTotal : 0,
       })
       setRows(normalizeRows(Array.from({ length: MIN_ROWS }, () => createNewRow()), createNewRow))
       setSelectedPt(null)
+      setLinkedAdmission(null)
+      setPaymentMethod('cash')
+      setPaidAmount('')
+      setBillDiscountPercent('')
       setInvoices((prev) => [invoice, ...prev])
       fetchInitialData()
       refreshInvoiceNo()
       toast.success('Invoice Generated')
     } catch (err) {
+      if (createdInvoice?.id) {
+        try {
+          await api.delete(`/pharmacy/invoices/${createdInvoice.id}/`)
+        } catch {
+          try {
+            await api.patch(`/pharmacy/invoices/${createdInvoice.id}/`, { status: 'cancelled' })
+          } catch {
+            // best-effort cleanup only
+          }
+        }
+      }
+      refreshInvoiceNo()
       toast.error(parseApiError(err))
     }
   }
 
   return (
-    <div className="h-full flex gap-2 overflow-hidden min-h-0 min-w-0 text-[14px]">
-      <div className="flex-1 flex flex-col gap-2 min-w-0 min-h-0 overflow-hidden">
-        <div className="bg-white border border-slate-200 px-2 py-1.5 rounded flex flex-wrap items-center justify-between gap-2 shrink-0">
+    <div className="h-full flex gap-3 overflow-hidden min-h-0 min-w-0 text-[14px] bg-gradient-to-br from-slate-50 via-white to-blue-50/40 rounded-xl p-2">
+      <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0 overflow-hidden">
+        <div className="relative z-[220] bg-white/95 border border-slate-200/80 px-3 py-2 rounded-xl shadow-sm flex flex-wrap items-center justify-between gap-2 shrink-0 backdrop-blur-sm">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
             <div className="min-w-0 flex-1 max-w-md">
               <p className="text-[8px] font-bold text-slate-500 uppercase mb-0.5">Patient</p>
@@ -523,7 +733,7 @@ function ErpBillingViewInner({
                     className="w-full bg-slate-50 border border-slate-200 pl-7 pr-2 py-0.5 rounded text-[11px] font-medium focus:bg-white focus:border-blue-500 outline-none uppercase"
                   />
                   {ptSearch.length > 2 && (
-                    <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border border-slate-200 shadow-lg z-50 max-h-40 overflow-y-auto text-left">
+                    <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border border-slate-200 shadow-lg z-[260] max-h-40 overflow-y-auto text-left">
                       {ptResults.length > 0 ? (
                         ptResults.map((p) => (
                           <button
@@ -531,6 +741,7 @@ function ErpBillingViewInner({
                             type="button"
                             onClick={() => {
                               setSelectedPt(p)
+                              setLinkedAdmission(activeAdmissionByPatientId[String(p.id)] || null)
                               setPtResults([])
                               setPtSearch('')
                             }}
@@ -539,8 +750,17 @@ function ErpBillingViewInner({
                             <div className="font-semibold text-slate-900">
                               {p.first_name} {p.last_name}
                             </div>
-                            <div className="text-[9px] text-slate-400">
-                              {p.phone} | {p.uhid}
+                            <div className="text-[9px] text-slate-400 flex items-center gap-1.5">
+                              <span>{p.phone} | {p.uhid}</span>
+                              {activeAdmissionByPatientId[String(p.id)] ? (
+                                <span className="px-1 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold">
+                                  Admitted · {activeAdmissionByPatientId[String(p.id)]?.bed_code || 'IPD'}
+                                </span>
+                              ) : (
+                                <span className="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500">
+                                  Not admitted
+                                </span>
+                              )}
                             </div>
                           </button>
                         ))
@@ -556,11 +776,11 @@ function ErpBillingViewInner({
                 </div>
               )}
             </div>
-            <div className="shrink-0 border border-slate-200 rounded px-2 py-1 bg-slate-50">
+            <div className="shrink-0 border border-slate-200 rounded-lg px-2 py-1 bg-slate-50">
               <p className="text-[8px] font-bold text-slate-500 uppercase">Bill #</p>
               <p className="text-[11px] font-mono font-bold text-slate-900 leading-tight">{invoiceNo || '—'}</p>
             </div>
-            <div className="shrink-0 border border-slate-200 rounded px-2 py-1 bg-slate-50 min-w-[146px]">
+            <div className="shrink-0 border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 min-w-[146px]">
               <p className="text-[8px] font-bold text-slate-500 uppercase">Invoice Date</p>
               <input
                 type="date"
@@ -569,7 +789,7 @@ function ErpBillingViewInner({
                 className="mt-0.5 w-full bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] outline-none focus:border-blue-500"
               />
             </div>
-            <div className="shrink-0 border border-slate-200 rounded px-2 py-1 bg-slate-50 min-w-[112px]">
+            <div className="shrink-0 border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 min-w-[112px]">
               <p className="text-[8px] font-bold text-slate-500 uppercase">Invoice Time</p>
               <input
                 type="time"
@@ -610,10 +830,10 @@ function ErpBillingViewInner({
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-200 rounded overflow-hidden min-w-0">
+        <div className="relative z-0 flex-1 flex flex-col min-h-0 bg-white border border-slate-200/90 rounded-xl overflow-hidden min-w-0 shadow-sm">
           <div className="overflow-x-hidden overflow-y-auto flex-1 min-h-0 min-w-0">
             <div
-              className={`grid ${GRID_BILL} gap-0 text-[11px] font-bold text-slate-600 bg-slate-100 border-b border-slate-200 px-0.5 py-1 sticky top-0 z-20 min-w-0`}
+              className={`grid ${GRID_BILL} gap-0 text-[11px] font-bold text-slate-700 bg-gradient-to-b from-slate-100 to-slate-50 border-b border-slate-200 px-0.5 py-1.5 sticky top-0 z-20 min-w-0 shadow-[inset_0_-1px_0_rgba(255,255,255,0.8)]`}
             >
               <span className="text-center tabular-nums">#</span>
               <span>Product Name</span>
@@ -625,9 +845,14 @@ function ErpBillingViewInner({
               <span className="text-right pr-0.5">Qty/Pack</span>
               <span className="text-right pr-0.5">Loose</span>
               <span className="text-right pr-0.5">Rate</span>
-              <span className="text-right pr-0.5">Disc</span>
+              <span className="text-right pr-0.5">Disc %</span>
               <span className={`text-right pr-0.5 ${gstEnabled ? '' : 'text-slate-300'}`}>GST</span>
-              <span className="text-right pr-0.5">Margin</span>
+              <span
+                className="text-right pr-0.5"
+                title="Per line: (selling rate − batch unit cost) × qty when unit cost is set on the batch."
+              >
+                Margin
+              </span>
               <span className="text-right pr-0.5">Amount</span>
               <span />
             </div>
@@ -640,17 +865,95 @@ function ErpBillingViewInner({
                 return (
                   <div
                     key={row.id}
-                    className={`grid ${GRID_BILL} gap-0 items-stretch text-[11px] min-h-[38px] min-w-0 ${
-                      activeRow === idx ? 'bg-blue-50/60' : idx % 2 ? 'bg-slate-50/30' : ''
+                    className={`grid ${GRID_BILL} gap-0 items-stretch text-[11px] min-h-[40px] min-w-0 transition-colors ${
+                      activeRow === idx ? 'bg-blue-50/80 ring-1 ring-inset ring-blue-200/70' : idx % 2 ? 'bg-slate-50/40' : 'hover:bg-blue-50/30'
                     }`}
                   >
                     <span className="flex items-center justify-center text-slate-400 tabular-nums">{idx + 1}</span>
 
-                    <div className="px-0.5 py-0.5 border-r border-slate-100 min-w-0">
-                      {row.medicine ? (
-                        <div className="flex flex-col min-w-0 gap-0.5">
+                    <div className={`px-0.5 py-0.5 border-r border-slate-100 min-w-0 ${activeRow === idx ? 'relative overflow-visible' : ''}`}>
+                      {!row.medicine || replacingRowId === row.id ? (
+                        <div className="relative min-h-[22px]">
+                          <input
+                            ref={(el) => {
+                              if (el) productRefs.current[row.id] = el
+                              else delete productRefs.current[row.id]
+                            }}
+                            autoFocus={
+                              (activeRow === idx && activeField === 'product' && !row.medicine) ||
+                              replacingRowId === row.id
+                            }
+                            onFocus={() => {
+                              setActiveRow(idx)
+                              setActiveField('product')
+                            }}
+                            type="text"
+                            placeholder={replacingRowId === row.id ? 'Search to replace…' : 'Search…'}
+                            value={activeRow === idx || replacingRowId === row.id ? pSearch : ''}
+                            onChange={(e) => {
+                              setPSearch(e.target.value)
+                              setActiveRow(idx)
+                            }}
+                            onKeyDown={(e) => handleRowEnter(e, row.id, 'product')}
+                            className="w-full min-w-0 bg-transparent outline-none uppercase font-semibold text-slate-900 placeholder:text-slate-300 text-[11px] px-1"
+                          />
+                          {replacingRowId === row.id && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReplacingRowId(null)
+                                setPSearch('')
+                                setSearchResults([])
+                              }}
+                              className="mt-0.5 text-[9px] text-blue-600 font-semibold hover:underline"
+                            >
+                              Keep current medicine
+                            </button>
+                          )}
+                          {activeRow === idx &&
+                            pSearch.length >= 2 &&
+                            (!row.medicine || replacingRowId === row.id) && (
+                              <div className="absolute top-full left-0 mt-0.5 w-[min(100vw-1.5rem,22rem)] max-w-[90vw] bg-white border border-slate-200 shadow-xl z-[80] max-h-48 overflow-y-auto rounded">
+                                {searchLoading && <div className="p-2 text-[9px] text-slate-400">Searching…</div>}
+                                {!searchLoading && searchResults.length === 0 && (
+                                  <div className="p-2 text-center text-[9px]">
+                                    <button type="button" onClick={() => setShowAddMedicine(true)} className="text-blue-600 font-medium">
+                                      + Add medicine
+                                    </button>
+                                  </div>
+                                )}
+                                {!searchLoading &&
+                                  searchResults.map((pick, j) => {
+                                    const dis = pick.expiry_status === 'expired' && !allowExpiredSale
+                                    return (
+                                      <SearchHitRow
+                                        key={`${pick.batch.id}-${j}`}
+                                        pick={pick}
+                                        disabled={dis}
+                                        onPick={(p) => applySearchPick(row.id, p)}
+                                      />
+                                    )
+                                  })}
+                              </div>
+                            )}
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          title="Tap to change product or batch"
+                          onClick={() => {
+                            setReplacingRowId(row.id)
+                            setActiveRow(idx)
+                            setActiveField('product')
+                            setPSearch('')
+                            setSearchResults([])
+                          }}
+                          className="text-left w-full min-w-0 flex flex-col gap-0.5 rounded px-0.5 py-0.5 -mx-0.5 hover:bg-blue-50/90 border border-transparent hover:border-blue-100/80 transition-colors cursor-pointer"
+                        >
                           <div className="flex items-center gap-1 min-w-0">
-                            <span className="font-semibold text-slate-900 uppercase truncate text-[11px]">{row.medicine.name}</span>
+                            <span className="font-semibold text-slate-900 uppercase truncate text-[11px]">
+                              {row.medicine.name}
+                            </span>
                             {expSt === 'expired' && (
                               <span className="shrink-0 text-[6px] font-bold px-1 rounded bg-rose-600 text-white">EXPIRED</span>
                             )}
@@ -661,47 +964,7 @@ function ErpBillingViewInner({
                           <span className="text-[7px] text-slate-400 truncate">
                             {row.medicine.pack_info} | {row.medicine.hsn_code}
                           </span>
-                        </div>
-                      ) : (
-                        <div className="relative min-h-[22px]">
-                          <input
-                            ref={(el) => {
-                              if (el) productRefs.current[row.id] = el
-                              else delete productRefs.current[row.id]
-                            }}
-                            autoFocus={activeRow === idx && activeField === 'product'}
-                            onFocus={() => {
-                              setActiveRow(idx)
-                              setActiveField('product')
-                            }}
-                            type="text"
-                            placeholder="Search…"
-                            value={activeRow === idx ? pSearch : ''}
-                            onChange={(e) => {
-                              setPSearch(e.target.value)
-                              setActiveRow(idx)
-                            }}
-                            onKeyDown={(e) => handleRowEnter(e, row.id, 'product')}
-                            className="w-full min-w-0 bg-transparent outline-none uppercase font-semibold text-slate-900 placeholder:text-slate-300 text-[11px] px-1"
-                          />
-                          {activeRow === idx && pSearch.length >= 2 && (
-                            <div className="absolute top-full left-0 mt-0.5 w-[min(100vw-1.5rem,22rem)] max-w-[90vw] bg-white border border-slate-200 shadow-xl z-[60] max-h-48 overflow-y-auto rounded">
-                              {searchLoading && <div className="p-2 text-[9px] text-slate-400">Searching…</div>}
-                              {!searchLoading && searchResults.length === 0 && (
-                                <div className="p-2 text-center text-[9px]">
-                                  <button type="button" onClick={() => setShowAddMedicine(true)} className="text-blue-600 font-medium">
-                                    + Add medicine
-                                  </button>
-                                </div>
-                              )}
-                              {!searchLoading &&
-                                searchResults.map((pick, j) => {
-                                  const dis = pick.expiry_status === 'expired' && !allowExpiredSale
-                                  return <SearchHitRow key={`${pick.batch.id}-${j}`} pick={pick} disabled={dis} onPick={(p) => applySearchPick(row.id, p)} />
-                                })}
-                            </div>
-                          )}
-                        </div>
+                        </button>
                       )}
                     </div>
 
@@ -719,10 +982,15 @@ function ErpBillingViewInner({
                         expSt === 'expired' ? 'text-rose-700 bg-rose-50' : expSt === 'expiring' ? 'text-amber-800 bg-amber-50/80' : 'text-slate-500'
                       }`}
                     >
-                      {safeFormat(row.batch?.expiry_date, 'MM/yy')}
+                      {safeFormat(row.batch?.expiry_date, 'dd/MM/yyyy')}
                     </div>
-                    <div className={`${CELL_NUM} text-[10px] text-slate-700`}>
-                      {row.batch?.mrp != null ? Number(row.batch.mrp).toFixed(2) : ''}
+                    <div
+                      className={`${CELL_NUM} text-[10px] text-slate-700`}
+                      title="Strip MRP (unit MRP × pack size)"
+                    >
+                      {row.batch?.mrp != null
+                        ? (Number(row.batch.mrp) * Math.max(1, Number(row.pack_size) || 1)).toFixed(2)
+                        : ''}
                     </div>
                     <div className={CELL_INP_WRAP}>
                       <input
@@ -782,26 +1050,51 @@ function ErpBillingViewInner({
                           setActiveRow(idx)
                           setActiveField('rate')
                         }}
-                        type="number"
-                        value={row.rate || ''}
-                        onChange={(e) => updateRowById(row.id, 'rate', Number(e.target.value))}
+                        type="text"
+                        inputMode="decimal"
+                        value={!row.medicine ? '' : Number(row.rate) === 0 ? '' : String(row.rate)}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim()
+                          if (raw === '' || raw === '.' || raw === '-') {
+                            patchRowById(row.id, { rate: 0 })
+                            return
+                          }
+                          const v = Number(raw)
+                          if (!Number.isFinite(v)) return
+                          patchRowById(row.id, { rate: v })
+                        }}
                         onKeyDown={(e) => handleRowEnter(e, row.id, 'rate')}
                         className={INP_NUM}
                       />
                     </div>
-                    <div className={CELL_INP_WRAP}>
+                    <div className={`${CELL_INP_WRAP} gap-0.5`}>
                       <input
                         ref={(el) => {
                           if (el) discRefs.current[row.id] = el
                           else delete discRefs.current[row.id]
                         }}
                         disabled={!row.medicine}
-                        type="number"
-                        value={row.line_discount || ''}
-                        onChange={(e) => patchRowById(row.id, { line_discount: Number(e.target.value) || 0 })}
+                        type="text"
+                        inputMode="decimal"
+                        title="% off MRP vs rate: changes selling rate to MRP × (1 − %/100)"
+                        value={row.line_discount === 0 ? '' : String(row.line_discount)}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim()
+                          if (raw === '' || raw === '.' || raw === '-') {
+                            patchRowById(row.id, { line_discount: 0, discount_user_set: true })
+                            return
+                          }
+                          const n = Number(raw)
+                          if (!Number.isFinite(n)) return
+                          patchRowById(row.id, {
+                            line_discount: Math.min(100, Math.max(0, n)),
+                            discount_user_set: true,
+                          })
+                        }}
                         onKeyDown={(e) => handleRowEnter(e, row.id, 'disc')}
-                        className={INP_NUM}
+                        className={`${INP_NUM} flex-1 min-w-0`}
                       />
+                      <span className="text-[8px] text-slate-400 shrink-0 pr-0.5">%</span>
                     </div>
                     <div className={CELL_INP_WRAP}>
                       <input
@@ -819,9 +1112,35 @@ function ErpBillingViewInner({
                         placeholder={gstEnabled ? '·' : '-'}
                       />
                     </div>
-                    <div className={`${CELL_NUM} text-[10px] text-slate-700`}>
-                      {row.batch && row.qty
-                        ? ((Number(row.batch?.mrp || 0) - Number(row.rate || 0)) * Number(row.qty || 0)).toFixed(2)
+                    <div className={`${CELL_NUM} text-[10px] text-slate-700 flex flex-col items-end justify-center leading-tight`}>
+                      {row.batch && Number(row.qty) > 0
+                        ? (() => {
+                            const unitSell = Number(row.rate)
+                            const unitCost = Number(row.batch?.unit_cost)
+                            const q = Number(row.qty || 0)
+                            const hasCost =
+                              row.batch &&
+                              Number.isFinite(unitCost) &&
+                              unitCost > 0 &&
+                              Number.isFinite(unitSell) &&
+                              unitSell > 0
+                            const unitMg = hasCost ? unitSell - unitCost : null
+                            const totalMg =
+                              unitMg != null ? Math.round(unitMg * q * 100) / 100 : null
+                            const unitRounded = unitMg != null ? Math.round(unitMg * 100) / 100 : null
+                            return hasCost ? (
+                              <>
+                                <span className="tabular-nums font-semibold">{totalMg.toFixed(2)}</span>
+                                {q > 1 && (
+                                  <span className="text-[8px] text-slate-400 font-normal">
+                                    total ({unitRounded.toFixed(2)} × {q % 1 === 0 ? String(q) : q.toFixed(2)})
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-[9px] text-slate-400 font-normal">—</span>
+                            )
+                          })()
                         : ''}
                     </div>
                     <RupeesCell value={lineMarg[idx]?.finalAmount} />
@@ -829,7 +1148,10 @@ function ErpBillingViewInner({
                       {row.medicine && (
                         <button
                           type="button"
-                          onClick={() => clearRowByIdAndNormalize(row.id, setRows, setActiveRow)}
+                          onClick={() => {
+                            setReplacingRowId((rid) => (rid === row.id ? null : rid))
+                            clearRowByIdAndNormalize(row.id, setRows, setActiveRow)
+                          }}
                           className="p-0.5 text-slate-300 hover:text-rose-500"
                           title="Remove line"
                         >
@@ -846,18 +1168,76 @@ function ErpBillingViewInner({
       </div>
 
       <div className="w-64 flex flex-col gap-2 shrink-0 min-h-0">
-        <div className="bg-white border border-slate-200 rounded p-2 flex flex-col gap-2 sticky top-0 z-10">
-          <div className="text-xs font-bold text-slate-500 uppercase">Summary</div>
+        <div className="bg-white border border-slate-200/90 rounded-xl p-3 flex flex-col gap-2 sticky top-0 z-10 shadow-sm">
+          <div className="text-xs font-extrabold tracking-wide text-slate-600 uppercase">Summary</div>
+          <div className="space-y-1">
+            <div className="text-[10px] font-semibold text-slate-500">Payment method</div>
+            <div className={`grid gap-1 ${linkedAdmission ? 'grid-cols-4' : 'grid-cols-3'}`}>
+              {[...(linkedAdmission ? ['cash', 'upi', 'other', 'credit'] : ['cash', 'upi', 'other'])].map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setPaymentMethod(mode)}
+                  className={`rounded-md border px-1 py-1 text-[9px] font-bold uppercase ${
+                    paymentMethod === mode
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : 'border-slate-200 bg-white text-slate-600'
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+            {linkedAdmission ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[9px] text-emerald-700">
+                Linked to IPD: {linkedAdmission.bed_code} ({linkedAdmission.patient_name})
+              </div>
+            ) : null}
+          </div>
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
               <span className="text-slate-600">Items</span>
               <span className="font-semibold tabular-nums">{rows.filter((r) => r.medicine).length}</span>
+            </div>
+            <div
+              className="flex justify-between items-baseline gap-2 text-[10px]"
+              title="Sum of qty × batch MRP when MRP is set; otherwise qty × rate."
+            >
+              <span className="text-slate-600">List gross</span>
+              <div className="flex justify-end items-center gap-0.5 min-w-0">
+                <span className="text-slate-500 shrink-0 text-[9px]">₹</span>
+                <span className="tabular-nums font-medium">{lineGrossTotal.toFixed(2)}</span>
+              </div>
             </div>
             <div className="flex justify-between items-baseline gap-2">
               <span className="text-slate-600">{gstEnabled ? 'Taxable' : 'Subtotal'}</span>
               <div className="flex justify-end items-center gap-0.5 min-w-0">
                 <span className="text-slate-500 shrink-0 text-[9px]">₹</span>
                 <span className="tabular-nums font-medium">{taxableSubtotal.toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold tracking-wide text-slate-600 uppercase block">Discount %</span>
+              <div className="relative w-full rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50/70 to-indigo-50/60 px-2 py-1.5 shadow-sm">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={billDiscountPercent}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim()
+                    if (raw === '' || raw === '.' || raw === '-') {
+                      setBillDiscountPercent('')
+                      return
+                    }
+                    const v = Number(raw)
+                    if (!Number.isFinite(v)) return
+                    const clamped = Math.min(Math.max(0, v), 100)
+                    setBillDiscountPercent(String(clamped))
+                  }}
+                  className="w-full bg-white/90 border border-blue-200 rounded-md px-2 pr-6 py-1.5 text-right tabular-nums text-[12px] font-semibold text-slate-900 outline-none shadow-inner transition-all focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  placeholder="0"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-700 text-[11px] font-semibold">%</span>
               </div>
             </div>
             {gstEnabled ? (
@@ -881,18 +1261,21 @@ function ErpBillingViewInner({
                 <span>No tax</span>
               </div>
             )}
-            <div className="flex justify-end items-center gap-0.5 text-xl font-bold text-slate-900">
-              <span className="text-slate-600 text-base font-semibold">₹</span>
-              <span className="tabular-nums">{Math.round(grandTotal)}</span>
+            <div className="flex justify-end items-center gap-0.5 text-[1.35rem] font-black text-slate-900 pt-1">
+              <span className="text-slate-600 text-sm font-semibold">₹</span>
+              <span className="tabular-nums">{netGrandTotal.toFixed(2)}</span>
             </div>
           </div>
-          <button type="button" onClick={handleSave} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm font-semibold">
+          <button type="button" onClick={handleSave} className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-2 rounded-lg text-sm font-bold shadow-md shadow-blue-200 transition-all">
             Save & Print
           </button>
           <button
             type="button"
-            onClick={() => setRows(normalizeRows(Array.from({ length: MIN_ROWS }, () => createNewRow()), createNewRow))}
-            className="w-full border border-slate-200 py-1.5 rounded text-sm text-slate-600"
+            onClick={() => {
+              setRows(normalizeRows(Array.from({ length: MIN_ROWS }, () => createNewRow()), createNewRow))
+              setBillDiscountPercent('')
+            }}
+            className="w-full border border-slate-200 py-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
           >
             Clear
           </button>

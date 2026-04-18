@@ -43,3 +43,32 @@ class Notification(TimeStampedModel, UUIDPrimaryKeyModel):
             self.is_read = True
             self.read_at = timezone.now()
             self.save(update_fields=["is_read", "read_at", "updated_at"])
+
+
+class WebPushSubscription(TimeStampedModel, UUIDPrimaryKeyModel):
+    hospital = models.ForeignKey(
+        Hospital,
+        on_delete=models.CASCADE,
+        related_name="webpush_subscriptions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="webpush_subscriptions",
+    )
+    endpoint = models.TextField(unique=True)
+    p256dh_key = models.CharField(max_length=255)
+    auth_key = models.CharField(max_length=255)
+    user_agent = models.CharField(max_length=500, blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["user", "is_active"]),
+            models.Index(fields=["hospital", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"WebPushSubscription<{self.user_id}>"
