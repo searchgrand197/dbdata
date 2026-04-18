@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ShoppingBag,
   Search,
@@ -328,6 +328,38 @@ function isLowStockRow(qty, stripSize) {
   return q < 15
 }
 
+function normalizeStockLedgerList(res) {
+  const raw = res?.data
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  const inner = raw.data ?? raw.entity ?? raw
+  if (Array.isArray(inner)) return inner
+  if (Array.isArray(inner?.results)) return inner.results
+  return []
+}
+
+function sortLedgerChronological(rows) {
+  return [...(rows || [])].sort((a, b) => {
+    const ta = new Date(a.created_at || 0).getTime()
+    const tb = new Date(b.created_at || 0).getTime()
+    return ta - tb
+  })
+}
+
+/** Human label for a stock ledger row (inventory UI). */
+function formatStockLedgerLabel(r) {
+  const rt = String(r.reference_type || '').toLowerCase()
+  if (rt === 'opening_stock') return 'Initial stock'
+  if (r.reason === 'stock_in' && rt === 'pharmacy_purchase_challan') return 'Purchase (stock in)'
+  if (r.reason === 'stock_in') return 'Stock in'
+  if (r.reason === 'return_in') return 'Return in'
+  if (r.reason === 'dispense_out') return 'Dispense out'
+  if (r.reason === 'adjust') {
+    return r.reference_id ? `Adjustment · ${r.reference_id}` : 'Adjustment'
+  }
+  return r.reason || '—'
+}
+
 function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialData }) {
   const [q, setQ] = useState('')
   const [allowNegative, setAllowNegative] = useState(() => localStorage.getItem(INV_ALLOW_NEG_KEY) === '1')
@@ -570,11 +602,10 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
     let cancelled = false
     setLoading(true)
     api
-      .get(`/stock-ledgers/?batch=${batch.id}&limit=40`)
+      .get(`/stock-ledgers/?batch=${batch.id}&limit=80`)
       .then((res) => {
-        const raw = res.data
-        const list = Array.isArray(raw) ? raw : raw?.data ?? raw?.results ?? []
-        if (!cancelled) setRows(Array.isArray(list) ? list : [])
+        const list = sortLedgerChronological(normalizeStockLedgerList(res))
+        if (!cancelled) setRows(list)
       })
       .catch(() => {
         if (!cancelled) setRows([])
@@ -637,7 +668,12 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
                 {rows.map((r) => (
                   <li key={r.id} className="flex justify-between gap-2 border-b border-slate-50 pb-0.5">
                     <span className="text-slate-600 truncate">
-                      {r.reason} {r.reference_id ? `· ${r.reference_id}` : ''}
+                      <span className="font-semibold text-slate-700">{formatStockLedgerLabel(r)}</span>
+                      {r.created_at && (
+                        <span className="text-slate-400 font-normal ml-1">
+                          · {safeFormat(r.created_at, 'dd MMM yy HH:mm')}
+                        </span>
+                      )}
                     </span>
                     <span className={`font-mono shrink-0 ${Number(r.qty_change) < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
                       {Number(r.qty_change) > 0 ? '+' : ''}
@@ -740,6 +776,28 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
   const [adjustQty, setAdjustQty] = useState('')
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
+  const [ledgerRows, setLedgerRows] = useState([])
+  const [ledgerLoading, setLedgerLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLedgerLoading(true)
+    api
+      .get(`/stock-ledgers/?batch=${batch.id}&limit=80`)
+      .then((res) => {
+        const list = sortLedgerChronological(normalizeStockLedgerList(res))
+        if (!cancelled) setLedgerRows(list)
+      })
+      .catch(() => {
+        if (!cancelled) setLedgerRows([])
+      })
+      .finally(() => {
+        if (!cancelled) setLedgerLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [batch.id])
 
   const current = Number(batch.quantity ?? 0)
   const adj = adjustQty === '' || adjustQty === '-' ? 0 : Number(adjustQty)
@@ -771,6 +829,12 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
         allow_negative_stock: allowNegative,
       })
       toast.success('Stock adjustment saved')
+      try {
+        const res = await api.get(`/stock-ledgers/?batch=${batch.id}&limit=80`)
+        setLedgerRows(sortLedgerChronological(normalizeStockLedgerList(res)))
+      } catch {
+        /* ignore */
+      }
       onSaved?.()
     } catch (e) {
       toast.error(parseApiError(e))
@@ -805,6 +869,41 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
           <div>
             <span className="text-slate-500">Current stock (base)</span>
             <div className="font-mono font-semibold text-emerald-800">{current % 1 === 0 ? current : current.toFixed(3)}</div>
+          </div>
+          <div className="rounded border border-slate-100 bg-slate-50/80 px-2 py-1.5">
+            <div className="text-[9px] font-bold text-slate-500 uppercase mb-1">Stock history</div>
+            {ledgerLoading && <div className="text-slate-400 text-[10px]">Loading…</div>}
+            {!ledgerLoading && ledgerRows.length === 0 && (
+              <div className="text-slate-400 text-[10px]">No movements yet.</div>
+            )}
+            {!ledgerLoading && ledgerRows.length > 0 && (
+              <ul className="space-y-1 max-h-32 overflow-y-auto text-[10px]">
+                {ledgerRows.map((r) => (
+                  <li key={r.id} className="flex justify-between gap-2 border-b border-slate-100/80 pb-0.5 last:border-0">
+                    <span className="text-slate-600 min-w-0 truncate">
+                      <span
+                        className={
+                          String(r.reference_type || '').toLowerCase() === 'opening_stock'
+                            ? 'font-semibold text-indigo-800'
+                            : 'font-medium text-slate-800'
+                        }
+                      >
+                        {formatStockLedgerLabel(r)}
+                      </span>
+                      {r.created_at && (
+                        <span className="text-slate-400 font-normal"> · {safeFormat(r.created_at, 'dd MMM yy HH:mm')}</span>
+                      )}
+                    </span>
+                    <span
+                      className={`font-mono shrink-0 ${Number(r.qty_change) < 0 ? 'text-rose-600' : 'text-emerald-700'}`}
+                    >
+                      {Number(r.qty_change) > 0 ? '+' : ''}
+                      {r.qty_change}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
           <label className="block">
             <span className="text-[9px] font-semibold text-slate-600">Adjust qty (+ in / − out)</span>
@@ -1113,6 +1212,45 @@ function uniqText(values) {
   return out
 }
 
+/** Unit-level MRP, sale rate, cost, and discount % for Add Medicine (matches pack vs unit input mode). */
+function computeUnitPricingForAddMedicine(data, unitsPerPack) {
+  const up = unitsPerPack > 0 ? unitsPerPack : 1
+  const enteredMrp = Number(data.mrp) || 0
+  const unitMrpRaw = data.mrp_input_type === 'pack' && up > 1 ? enteredMrp / up : enteredMrp
+  const unitMrp = Math.round(unitMrpRaw * 100) / 100
+
+  const saleStr = String(data.selling_price ?? '').trim()
+  let unitSale
+  if (saleStr === '') {
+    unitSale = unitMrp
+  } else {
+    const enteredSale = Number(data.selling_price) || 0
+    const raw = data.mrp_input_type === 'pack' && up > 1 ? enteredSale / up : enteredSale
+    unitSale = Math.round(raw * 100) / 100
+  }
+
+  const costStr = String(data.cost_price ?? '').trim()
+  let unitCost
+  if (costStr === '') {
+    unitCost = 0
+  } else {
+    const enteredCost = Number(data.cost_price) || 0
+    const raw = data.mrp_input_type === 'pack' && up > 1 ? enteredCost / up : enteredCost
+    unitCost = Math.round(raw * 100) / 100
+  }
+
+  const discountPct = unitMrp > 0 ? Math.round(((unitMrp - unitSale) / unitMrp) * 10000) / 100 : null
+
+  return { unitMrp, unitSale, unitCost, discountPct }
+}
+
+function formatMoneyInput(v) {
+  if (v == null || v === '') return ''
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  return n.toFixed(2)
+}
+
 function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
   const fallbackGstStr = resolveNewMedicineDefaultGst(defaultGstPercent)
   const [data, setData] = useState({
@@ -1121,6 +1259,8 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     form: '',
     composition: '',
     mrp: '',
+    selling_price: '',
+    cost_price: '',
     mrp_input_type: 'unit',
     price_tax_mode: 'exclusive',
     units_per_pack: '',
@@ -1131,6 +1271,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     existing_batch_id: '',
     batch_no: '',
     expiry_date: '',
+    opening_stock_qty: '',
   })
   const [units, setUnits] = useState([])
   const [forms, setForms] = useState([])
@@ -1138,6 +1279,15 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
   const [submitting, setSubmitting] = useState(false)
   const [showFormOptions, setShowFormOptions] = useState(false)
   const [creatingForm, setCreatingForm] = useState(false)
+
+  const unitPricingPreview = useMemo(() => {
+    const unitsPerPack =
+      data.mrp_input_type === 'unit'
+        ? 1
+        : Math.max(0, Number(data.units_per_pack) || 0)
+    if (data.mrp_input_type === 'pack' && !(unitsPerPack > 0)) return null
+    return computeUnitPricingForAddMedicine(data, unitsPerPack)
+  }, [data])
 
   useEffect(() => {
     let cancelled = false
@@ -1173,6 +1323,28 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     }
   }, [])
 
+  const pricingLocked = !!(data.add_batch && data.batch_mode === 'existing' && data.existing_batch_id)
+
+  useEffect(() => {
+    if (!data.add_batch || data.batch_mode !== 'existing' || !data.existing_batch_id) return
+    const b = batchOptions.find((x) => String(x.id) === String(data.existing_batch_id))
+    if (!b) return
+    const uMrp = Number(b.mrp) || 0
+    const uSale = Number(b.sale_rate) || 0
+    const uCost = Number(b.unit_cost) || 0
+    const up =
+      data.mrp_input_type === 'unit'
+        ? 1
+        : Math.max(1, Number(data.units_per_pack) || 1)
+    const mult = data.mrp_input_type === 'pack' && up > 1 ? up : 1
+    setData((d) => ({
+      ...d,
+      mrp: formatMoneyInput(uMrp * mult),
+      selling_price: formatMoneyInput(uSale * mult),
+      cost_price: formatMoneyInput(uCost * mult),
+    }))
+  }, [data.add_batch, data.batch_mode, data.existing_batch_id, batchOptions, data.mrp_input_type, data.units_per_pack])
+
   async function handleAdd() {
     if (!data.name.trim()) return toast.error('Product name is required')
     if (!data.form.trim()) return toast.error('Product form is required')
@@ -1187,20 +1359,26 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     if (data.add_batch && data.batch_mode === 'existing' && !data.existing_batch_id) {
       return toast.error('Select an existing batch')
     }
+    const openStockRaw = String(data.opening_stock_qty ?? '').trim()
+    if (data.add_batch && openStockRaw !== '') {
+      const oq = Number(openStockRaw)
+      if (!Number.isFinite(oq) || oq < 0) {
+        return toast.error('Opening stock must be zero or a positive number')
+      }
+    }
+    const { unitMrp, unitSale, unitCost } = computeUnitPricingForAddMedicine(data, unitsPerPack)
+    if (!(unitMrp > 0)) {
+      return toast.error('Derived unit MRP must be greater than zero')
+    }
+    if (!(unitSale > 0)) {
+      return toast.error('Selling price must be greater than zero')
+    }
+    if (unitCost < 0) {
+      return toast.error('Cost cannot be negative')
+    }
     const unitId = units[0]?.id
     setSubmitting(true)
     try {
-      const enteredMrp = Number(data.mrp) || 0
-      const unitMrpRaw =
-        data.mrp_input_type === 'pack' && unitsPerPack > 1
-          ? enteredMrp / unitsPerPack
-          : enteredMrp
-      const unitMrp = Number(unitMrpRaw.toFixed(2))
-      if (!(unitMrp > 0)) {
-        toast.error('Derived unit price must be greater than zero')
-        setSubmitting(false)
-        return
-      }
       let gstNum
       if (data.no_gst) {
         gstNum = 0
@@ -1244,21 +1422,49 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
         const existing = batchOptions.find((b) => String(b.id) === String(data.existing_batch_id))
         const batchNo = data.batch_mode === 'existing' ? (existing?.batch_no || '').trim() : data.batch_no.trim()
         const expiryDate = data.batch_mode === 'existing' ? existing?.expiry_date : data.expiry_date
-        const unitCost = data.batch_mode === 'existing' ? String(existing?.unit_cost ?? '0') : '0'
+        const batchUnitCost =
+          data.batch_mode === 'existing' ? String(existing?.unit_cost ?? '0') : unitCost.toFixed(2)
         const batchMrp = data.batch_mode === 'existing' ? String(existing?.mrp ?? unitMrp.toFixed(2)) : unitMrp.toFixed(2)
         const batchSaleRate =
-          data.batch_mode === 'existing' ? String(existing?.sale_rate ?? unitMrp.toFixed(2)) : unitMrp.toFixed(2)
-        await api.post('/batches/', {
+          data.batch_mode === 'existing' ? String(existing?.sale_rate ?? unitMrp.toFixed(2)) : unitSale.toFixed(2)
+        const batchRes = await api.post('/batches/', {
           medicine: createdMedicineId,
           batch_no: batchNo,
           expiry_date: expiryDate,
-          unit_cost: unitCost,
+          unit_cost: batchUnitCost,
           mrp: batchMrp,
           sale_rate: batchSaleRate,
         })
-      }
-      if (data.add_batch) {
-        toast.success('Medicine and batch created')
+        const batchPayload = batchRes?.data?.data ?? batchRes?.data?.entity ?? batchRes?.data
+        const newBatchId = batchPayload?.id ?? batchRes?.data?.id
+        const openStockRaw = String(data.opening_stock_qty ?? '').trim()
+        const openQty = openStockRaw === '' ? 0 : Number(openStockRaw)
+        let openingStockRecorded = false
+        if (newBatchId && Number.isFinite(openQty) && openQty > 0) {
+          try {
+            await api.post('/stock-ledgers/', {
+              medicine: createdMedicineId,
+              batch: newBatchId,
+              reason: 'stock_in',
+              qty_change: String(openQty),
+              reference_type: 'opening_stock',
+              reference_id: 'create_product',
+            })
+            openingStockRecorded = true
+          } catch (stockErr) {
+            toast.error(
+              parseApiError(stockErr) || 'Product saved, but opening stock could not be recorded. Adjust stock from Inventory.',
+            )
+          }
+        } else if (openQty > 0 && !newBatchId) {
+          toast.error('Batch was created but the response did not include an id; add stock from Inventory.')
+        }
+        const wantedOpening = Number.isFinite(openQty) && openQty > 0
+        if (wantedOpening && openingStockRecorded) {
+          toast.success('Medicine, batch, and opening stock saved')
+        } else {
+          toast.success('Medicine and batch created')
+        }
       } else {
         toast.success('Medicine created (not visible in Inventory until a batch is added)')
       }
@@ -1408,7 +1614,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                   <div className="grid grid-cols-2 gap-1.5 w-full max-w-[320px]">
                     <button
                       type="button"
-                      onClick={() => setData((d) => ({ ...d, batch_mode: 'new' }))}
+                      onClick={() => setData((d) => ({ ...d, batch_mode: 'new', existing_batch_id: '' }))}
                       className={`border rounded-md px-2 py-0.5 text-[10px] font-semibold ${
                         data.batch_mode === 'new'
                           ? 'bg-blue-600 border-blue-600 text-white'
@@ -1460,23 +1666,51 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                         className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 bg-white"
                       >
                         <option value="">Choose batch...</option>
-                        {batchOptions.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.batch_no} | exp {b.expiry_date || '--/--'} | ₹{Number(b.sale_rate || 0).toFixed(2)}
-                          </option>
-                        ))}
+                        {batchOptions.map((b) => {
+                          const q = b.quantity != null ? Number(b.quantity) : null
+                          const qStr =
+                            q != null && Number.isFinite(q) ? (q % 1 === 0 ? String(q) : q.toFixed(3)) : '—'
+                          return (
+                            <option key={b.id} value={b.id}>
+                              {b.batch_no} | exp {b.expiry_date || '--/--'} | ₹{Number(b.sale_rate || 0).toFixed(2)} | stock{' '}
+                              {qStr}
+                            </option>
+                          )
+                        })}
                       </select>
                       <p className="mt-1 text-[10px] text-slate-500">
                         Copies selected batch details (batch no, expiry, rates) to this new product.
                       </p>
                     </label>
                   )}
+                  <label className="block">
+                    <span className="text-[10px] font-semibold text-slate-700">Opening stock (qty)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={data.opening_stock_qty}
+                      onChange={(e) => setData((d) => ({ ...d, opening_stock_qty: e.target.value }))}
+                      placeholder="0 — base units (e.g. tablets)"
+                      className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
+                    />
+                    <p className="mt-0.5 text-[9px] text-slate-500">
+                      Same units as inventory / billing (tablets, etc.). Empty or 0 = no opening receipt; you can adjust later.
+                    </p>
+                  </label>
                 </div>
               )}
             </section>
 
             <section className="space-y-1 border-t border-slate-100 pt-1">
               <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Pricing</p>
+              {pricingLocked && (
+                <p className="text-[9px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-2 py-1">
+                  MRP, selling price, and cost are taken from the selected batch and cannot be edited. You can still
+                  switch <strong>1 unit</strong> vs <strong>Full pack</strong> and set <strong>Units / pack</strong> for
+                  how amounts are shown; opening stock and GST below stay editable.
+                </p>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
                 <label className="block md:col-span-2">
                   <span className="text-[10px] font-semibold text-slate-700">Price Input Type</span>
@@ -1509,14 +1743,15 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                 </label>
                 <label className="block">
                   <span className="text-[10px] font-semibold text-slate-700">
-                    Price* {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                    MRP* {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
                   </span>
                   <input
                     type="number"
                     value={data.mrp}
                     onChange={(e) => setData({ ...data, mrp: e.target.value })}
                     placeholder="0.00"
-                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
                   />
                 </label>
                 <label className="block">
@@ -1530,6 +1765,45 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                     className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                   />
                 </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    Selling price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                  </span>
+                  <input
+                    type="number"
+                    value={data.selling_price}
+                    onChange={(e) => setData({ ...data, selling_price: e.target.value })}
+                    placeholder="Leave empty to use MRP"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    Cost price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={data.cost_price}
+                    onChange={(e) => setData({ ...data, cost_price: e.target.value })}
+                    placeholder="Optional — purchase rate"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                </label>
+                <div className="block md:col-span-2">
+                  <span className="text-[10px] font-semibold text-slate-700">Discount % (auto)</span>
+                  <div
+                    className="mt-1 h-7 w-full max-w-xs rounded border border-slate-200 bg-slate-50 px-2 flex items-center justify-end tabular-nums text-[11px] font-semibold text-slate-800"
+                    title="((MRP − selling price) ÷ MRP) × 100 on unit rates"
+                  >
+                    {unitPricingPreview && unitPricingPreview.unitMrp > 0
+                      ? `${unitPricingPreview.discountPct != null ? unitPricingPreview.discountPct.toFixed(2) : '0.00'}%`
+                      : '—'}
+                  </div>
+                  <p className="mt-0.5 text-[9px] text-slate-400">Updates when MRP and selling price change.</p>
+                </div>
                 <label className="block">
                   <span className="text-[10px] font-semibold text-slate-700">Tax Mode</span>
                   <div className="mt-1 grid grid-cols-2 gap-1.5">
@@ -1588,22 +1862,19 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                 </label>
                 <p className="md:col-span-2 text-[10px] text-slate-500">
                   {(() => {
-                    const unitsPerPack = Math.max(1, Number(data.units_per_pack) || 1)
-                    const enteredMrp = Number(data.mrp) || 0
-                    const unitMrp =
-                      data.mrp_input_type === 'pack' && unitsPerPack > 1
-                        ? enteredMrp / unitsPerPack
-                        : enteredMrp
-                    const gstPct = data.no_gst ? 0 : Math.max(0, Number(data.gst_percent || fallbackGstStr) || 0)
-                    if (!(unitMrp > 0)) return 'Enter price and units/pack to preview unit price.'
-                    if (gstPct <= 0) return `Unit price used for billing: ₹${unitMrp.toFixed(2)} (No GST)`
-                    if (data.price_tax_mode === 'inclusive') {
-                      const base = unitMrp / (1 + gstPct / 100)
-                      const gstAmt = unitMrp - base
-                      return `GST included ${gstPct}%: base ₹${base.toFixed(2)} + GST ₹${gstAmt.toFixed(2)}`
+                    if (!unitPricingPreview || !(unitPricingPreview.unitSale > 0)) {
+                      return 'Enter MRP, units/pack, and selling price to preview GST on the unit sale rate.'
                     }
-                    const gstAmt = unitMrp * (gstPct / 100)
-                    return `GST excluded ${gstPct}%: base ₹${unitMrp.toFixed(2)} + GST ₹${gstAmt.toFixed(2)}`
+                    const unitBill = unitPricingPreview.unitSale
+                    const gstPct = data.no_gst ? 0 : Math.max(0, Number(data.gst_percent || fallbackGstStr) || 0)
+                    if (gstPct <= 0) return `Unit sale rate: ₹${unitBill.toFixed(2)} (No GST)`
+                    if (data.price_tax_mode === 'inclusive') {
+                      const base = unitBill / (1 + gstPct / 100)
+                      const gstAmt = unitBill - base
+                      return `GST included ${gstPct}% on sale rate: base ₹${base.toFixed(2)} + GST ₹${gstAmt.toFixed(2)}`
+                    }
+                    const gstAmt = unitBill * (gstPct / 100)
+                    return `GST excluded ${gstPct}% on sale rate: taxable ₹${unitBill.toFixed(2)} + GST ₹${gstAmt.toFixed(2)}`
                   })()}
                 </p>
               </div>
