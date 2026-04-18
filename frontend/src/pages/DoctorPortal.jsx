@@ -897,8 +897,20 @@ function OPDTab({ aiMode = false }) {
     finally { setLoading(false) }
   }
 
+  /** API lists visits by newest first; queue call must be FIFO by token / queue number. */
+  const waiting = useMemo(
+    () =>
+      [...visits.filter((v) => v.status === 'waiting')].sort((a, b) => {
+        const na = Number(a.queue_number ?? a.token_number ?? 0)
+        const nb = Number(b.queue_number ?? b.token_number ?? 0)
+        return na - nb
+      }),
+    [visits],
+  )
+  const inProgress = visits.filter((v) => v.status === 'in_progress' || v.status === 'in_consultation')
+  const done = visits.filter((v) => v.status === 'completed')
+
   async function callNext() {
-    const waiting = visits.filter(v => v.status === 'waiting')
     if (!waiting.length) return toast('No patients waiting', { icon: 'ℹ️' })
     const next = waiting[0]
     try {
@@ -952,16 +964,22 @@ function OPDTab({ aiMode = false }) {
     updateVisitNotes(id, updated);
   }
 
-  const waiting = visits.filter(v => v.status === 'waiting')
-  const inProgress = visits.filter(v => v.status === 'in_progress' || v.status === 'in_consultation')
-  const done = visits.filter(v => v.status === 'completed')
-
   const statusBadge = {
     waiting: 'bg-amber-100 text-amber-700',
     in_progress: 'bg-blue-100 text-blue-700',
     in_consultation: 'bg-blue-100 text-blue-700',
     completed: 'bg-green-100 text-green-700',
   }
+
+  const visitsQueueOrder = useMemo(
+    () =>
+      [...visits].sort((a, b) => {
+        const na = Number(a.queue_number ?? a.token_number ?? 0)
+        const nb = Number(b.queue_number ?? b.token_number ?? 0)
+        return na - nb
+      }),
+    [visits],
+  )
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
@@ -1114,7 +1132,7 @@ function OPDTab({ aiMode = false }) {
         <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
           {visits.length === 0 ? (
             <div className="text-center py-10 text-gray-400 text-sm">No visits today</div>
-          ) : visits.map(v => (
+          ) : visitsQueueOrder.map(v => (
             <div key={v.id} className="px-4 py-3 flex items-center gap-3">
               <div className={`w-9 h-9 rounded-xl font-bold text-sm flex items-center justify-center ${
                 (v.status === 'in_progress' || v.status === 'in_consultation') ? 'bg-blue-600 text-white' :
