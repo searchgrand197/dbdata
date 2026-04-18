@@ -2889,6 +2889,7 @@ function EmergencySection() {
     payment_mode: 'cash',
     auto_print: false,
   })
+  const [autoPrintEmergencySlip, setAutoPrintEmergencySlip] = useState(true)
 
   useEffect(() => {
     loadCases()
@@ -2929,6 +2930,9 @@ function EmergencySection() {
     localStorage.setItem('emergency_cases', JSON.stringify(updated))
     setCases(updated)
     toast.success('Emergency case logged')
+    if (autoPrintEmergencySlip) {
+      printEmergencyCaseSlip(entry)
+    }
     setForm({ patient_name: '', contact: '', complaint: '', triage: 'yellow' })
   }
 
@@ -3036,6 +3040,90 @@ function EmergencySection() {
         <div class="footer">
           <div class="note"><strong>Note:</strong> Your reports will be preserved only for 6 months.<br/>Please retain this receipt for future reference.</div>
           <div class="paid-box">✓ PAID</div>
+        </div>
+      </div>
+      <script>window.onload = () => window.print()</script>
+    </body></html>`)
+    w.document.close()
+  }
+
+  /** ER registration / triage slip (no payment) — given to patient at triage. */
+  function printEmergencyCaseSlip(c) {
+    const esc = (s) =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+    const w = window.open('', '_blank')
+    if (!w) {
+      toast.error('Allow pop-ups to print the emergency slip')
+      return
+    }
+    const arrived = c.arrived_at ? format(new Date(c.arrived_at), 'd/M/yyyy HH:mm:ss') : format(new Date(), 'd/M/yyyy HH:mm:ss')
+    const caseRef = `ER-${c.id}`
+    const triageLabel =
+      c.triage === 'red' ? 'CRITICAL (Red)' : c.triage === 'green' ? 'Minor (Green)' : 'Moderate (Yellow)'
+    const patientUp = esc((c.patient_name || 'PATIENT').toUpperCase())
+    const complaintEsc = esc(c.complaint || '—')
+    const contactEsc = esc(c.contact || '—')
+    const statusEsc = esc((c.status || 'waiting').replace(/_/g, ' ').toUpperCase())
+
+    w.document.write(`<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>Emergency Slip — ${caseRef}</title>
+      <style>
+        @page { size: A4 portrait; margin: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; font-size: 11px; color: #111; width: 210mm; background: #fff; }
+        .slip { width: 210mm; min-height: 148.5mm; padding: 6mm 8mm 4mm; display: flex; flex-direction: column; }
+        .top { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 4mm; border-bottom: 2px solid #b91c1c; margin-bottom: 3mm; }
+        .hosp-name { font-size: 22px; font-weight: 900; color: #b91c1c; letter-spacing: -0.5px; line-height: 1; margin-bottom: 2px; }
+        .hosp-tag { font-size: 9px; color: #555; letter-spacing: 0.5px; text-transform: uppercase; }
+        .er-badge { background: #b91c1c; color: #fff; font-weight: 900; font-size: 11px; padding: 4px 10px; border-radius: 4px; letter-spacing: 1px; }
+        .address { text-align: right; font-size: 9.5px; color: #333; line-height: 1.55; }
+        .address strong { font-size: 10px; }
+        .slip-title { text-align: center; font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #111; padding-bottom: 2mm; margin-bottom: 3mm; color: #991b1b; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm 5mm; margin-bottom: 3mm; font-size: 10.5px; }
+        .info-cell { display: flex; flex-direction: column; gap: 2px; }
+        .info-cell.full { grid-column: 1 / -1; }
+        .info-label { color: #666; font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .info-val { font-weight: 700; color: #111; word-break: break-word; }
+        .complaint-box { border: 1px solid #e5e7eb; border-radius: 6px; padding: 3mm; margin-top: 1mm; font-size: 10.5px; line-height: 1.45; min-height: 18mm; }
+        .footer { margin-top: auto; padding-top: 3mm; border-top: 1px dashed #aaa; font-size: 9px; color: #555; line-height: 1.5; }
+        .note-strong { color: #991b1b; font-weight: 700; }
+      </style>
+    </head><body>
+      <div class="slip">
+        <div class="top">
+          <div>
+            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-tag">Emergency &amp; Trauma</div>
+            <div style="margin-top:6px"><span class="er-badge">EMERGENCY</span></div>
+          </div>
+          <div class="address">
+            <strong>Jind, Haryana</strong><br/>
+            Pincode: 126102<br/>
+            Phone: +91-XXXXXXXXXX<br/>
+            Email: info@vardraanhospital.com
+          </div>
+        </div>
+        <div class="slip-title">Emergency registration slip</div>
+        <div class="info-grid">
+          <div class="info-cell"><span class="info-label">Case reference</span><span class="info-val">${caseRef}</span></div>
+          <div class="info-cell"><span class="info-label">Date &amp; time</span><span class="info-val">${arrived}</span></div>
+          <div class="info-cell"><span class="info-label">Patient name</span><span class="info-val">${patientUp}</span></div>
+          <div class="info-cell"><span class="info-label">Contact</span><span class="info-val">${contactEsc}</span></div>
+          <div class="info-cell"><span class="info-label">Triage category</span><span class="info-val">${triageLabel}</span></div>
+          <div class="info-cell"><span class="info-label">Queue status</span><span class="info-val">${statusEsc}</span></div>
+          <div class="info-cell full">
+            <span class="info-label">Chief complaint</span>
+            <div class="complaint-box">${complaintEsc}</div>
+          </div>
+        </div>
+        <div class="footer">
+          <p class="note-strong">Please keep this slip until you are seen by the doctor.</p>
+          <p>Show this slip at billing if any emergency charges apply. This is not a payment receipt.</p>
         </div>
       </div>
       <script>window.onload = () => window.print()</script>
@@ -3314,6 +3402,15 @@ function EmergencySection() {
               className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none" />
           </div>
         </div>
+        <label className="mt-3 flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={autoPrintEmergencySlip}
+            onChange={(e) => setAutoPrintEmergencySlip(e.target.checked)}
+            className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+          />
+          Print emergency registration slip after logging (A4 / browser print)
+        </label>
         <button type="submit"
           className="mt-3 bg-red-600 text-white px-6 py-2 rounded-xl text-sm font-semibold hover:bg-red-700 flex items-center gap-2">
           <AlertTriangle size={14} /> Log Case
@@ -3342,6 +3439,14 @@ function EmergencySection() {
                 className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg font-semibold hover:bg-blue-200"
               >
                 View
+              </button>
+              <button
+                type="button"
+                onClick={() => printEmergencyCaseSlip(c)}
+                className="text-xs bg-rose-50 text-rose-700 border border-rose-200 px-2 py-1 rounded-lg font-semibold hover:bg-rose-100 flex items-center gap-1"
+                title="Print ER registration slip"
+              >
+                <Printer size={12} strokeWidth={2.5} /> Print slip
               </button>
               {c.status === 'waiting' && (
                 <button
@@ -3398,9 +3503,16 @@ function EmergencySection() {
                 <p className="text-sm font-semibold text-gray-800 capitalize">{selectedCase.status || 'waiting'}</p>
               </div>
             </div>
-            <div className="px-5 pb-4 flex gap-2">
-              <button onClick={() => setSelectedCase(null)} className="flex-1 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 font-medium">
+            <div className="px-5 pb-4 flex flex-wrap gap-2">
+              <button onClick={() => setSelectedCase(null)} className="flex-1 min-w-[100px] py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 font-medium">
                 Close
+              </button>
+              <button
+                type="button"
+                onClick={() => printEmergencyCaseSlip(selectedCase)}
+                className="flex-1 min-w-[120px] py-2 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-sm font-semibold hover:bg-rose-100 flex items-center justify-center gap-1.5"
+              >
+                <Printer size={16} strokeWidth={2.5} /> Print ER slip
               </button>
               {selectedCase.status === 'waiting' && (
                 <button
@@ -3408,7 +3520,7 @@ function EmergencySection() {
                     setSelectedCase(null)
                     openAdmitModal(selectedCase)
                   }}
-                  className="flex-1 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
+                  className="flex-1 min-w-[120px] py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
                 >
                   Admit to IPD
                 </button>

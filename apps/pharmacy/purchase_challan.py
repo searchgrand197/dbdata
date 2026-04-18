@@ -38,6 +38,16 @@ def _resolve_rate_type(raw: dict[str, Any], basis: str) -> str:
     return "STRIP" if basis == "pack" else "TABLET"
 
 
+def _to_per_base_price(value: Decimal, *, basis: str, conversion: Decimal) -> Decimal:
+    """Normalize pack-entered price fields to per-base-unit values for storage."""
+    v = Decimal(value)
+    if basis != "pack":
+        return v
+    if conversion <= 0:
+        return v
+    return (v / conversion).quantize(Decimal("0.01"))
+
+
 @transaction.atomic
 def process_purchase_challan(
     *,
@@ -131,8 +141,8 @@ def process_purchase_challan(
         else:
             line_gross = total_qty * purchase_rate
 
-        mrp = Decimal(raw["mrp"])
-        sale_rate = Decimal(raw.get("sale_rate") or mrp)
+        mrp_input = Decimal(raw["mrp"])
+        sale_rate_input = Decimal(raw.get("sale_rate") or mrp_input)
         discount = Decimal(raw.get("discount") or "0")
         no_gst = bool(raw.get("skip_gst") or raw.get("no_gst")) or (not gst_enabled)
         gst_type = normalize_gst_type(raw.get("gst_type"))
@@ -157,6 +167,13 @@ def process_purchase_challan(
         total_taxable += taxable
 
         cost_per_base = (taxable / total_qty).quantize(Decimal("0.0001")) if total_qty > 0 else Decimal("0")
+        mrp_per_base = _to_per_base_price(mrp_input, basis=basis, conversion=conversion)
+        sale_rate_per_base = _to_per_base_price(sale_rate_input, basis=basis, conversion=conversion)
+        purchase_rate_per_base = (
+            _to_per_base_price(purchase_rate, basis=basis, conversion=conversion)
+            if rate_type == "STRIP"
+            else purchase_rate.quantize(Decimal("0.01"))
+        )
 
         pack_key = (raw.get("pack_type") or "").strip().lower()
         if pack_key and pack_key in ("strip", "box", "carton") and conversion > 0 and basis == "pack":
@@ -169,14 +186,14 @@ def process_purchase_challan(
             defaults={
                 "expiry_date": expiry_date,
                 "unit_cost": cost_per_base,
-                "mrp": mrp,
-                "sale_rate": sale_rate,
+                "mrp": mrp_per_base,
+                "sale_rate": sale_rate_per_base,
             },
         )
         if not created:
             batch.expiry_date = expiry_date
-            batch.mrp = mrp
-            batch.sale_rate = sale_rate
+            batch.mrp = mrp_per_base
+            batch.sale_rate = sale_rate_per_base
             batch.unit_cost = cost_per_base
             batch.save(update_fields=["expiry_date", "mrp", "sale_rate", "unit_cost", "updated_at"])
 
@@ -190,9 +207,9 @@ def process_purchase_challan(
             pack_quantity=qty_val if basis == "pack" else Decimal("0"),
             base_qty=total_qty,
             rate_type=rate_type,
-            purchase_rate=purchase_rate,
-            mrp=mrp,
-            sale_rate=sale_rate,
+            purchase_rate=purchase_rate_per_base,
+            mrp=mrp_per_base,
+            sale_rate=sale_rate_per_base,
             discount=discount,
             gst_type=gst_type or "exclusive",
             gst_percent=eff_gst,

@@ -83,6 +83,13 @@ class DischargeSummaryViewSet(viewsets.ModelViewSet):
             admission.discharged_at = timezone.now()
             admission.save(update_fields=["status", "discharged_at"])
 
+        # 3. Release occupied bed immediately after discharge (vacant/available).
+        if admission.bed_code:
+            Bed.objects.filter(
+                bed_code=admission.bed_code,
+                hospital_id=hospital_id,
+            ).update(status=Bed.Status.AVAILABLE)
+
     @action(detail=False, methods=["get"], url_path="billing-summary")
     def billing_summary(self, request):
         """Calculate total billed, paid, and outstanding for an admission including room charges."""
