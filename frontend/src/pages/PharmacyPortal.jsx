@@ -1944,28 +1944,37 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
 }
 
 function AddPatientModal({ onClose, onAdd }) {
-  const [data, setData] = useState({ first_name: '', last_name: '', phone: '', gender: 'M', date_of_birth: '' })
+  const [data, setData] = useState({ first_name: '', last_name: '', phone: '', gender: 'male' })
   const [submitting, setSubmitting] = useState(false)
 
   async function handleAdd() {
-    if (!data.first_name || !data.phone) {
+    const firstName = (data.first_name || '').trim()
+    const lastName = (data.last_name || '').trim()
+    const phone = (data.phone || '').trim()
+    if (!firstName || !phone) {
       toast.error('Name & phone required')
       return
     }
     setSubmitting(true)
     try {
-      const res = await api.post('/patients/', data)
+      const payload = {
+        first_name: firstName,
+        last_name: lastName,
+        phone,
+        gender: data.gender || 'other',
+      }
+      const res = await api.post('/patients/', payload)
       toast.success('Patient registered')
       onAdd(res.data?.data || res.data)
-    } catch {
-      toast.error('Registration failed')
+    } catch (err) {
+      toast.error(parseApiError(err) || 'Registration failed')
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center p-6">
+    <div className="fixed inset-0 bg-slate-950/60 z-[9999] flex items-center justify-center p-6">
       <div className="bg-white w-full max-w-md rounded-lg shadow-xl overflow-hidden">
         <div className="p-5">
           <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
