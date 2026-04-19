@@ -225,6 +225,7 @@ function ErpBillingViewInner({
   const [billDiscountPercent, setBillDiscountPercent] = useState('')
   const [linkedAdmission, setLinkedAdmission] = useState(null)
   const [activeAdmissionByPatientId, setActiveAdmissionByPatientId] = useState({})
+  const [doctorProfileIdByUserId, setDoctorProfileIdByUserId] = useState({})
 
   const productRefs = useRef({})
   const packRefs = useRef({})
@@ -283,6 +284,31 @@ function ErpBillingViewInner({
       cancelled = true
     }
   }, [debouncedPtSearch])
+
+  React.useEffect(() => {
+    let cancelled = false
+    api
+      .get('/doctor-profiles/', { params: { limit: 500 } })
+      .then((res) => {
+        if (cancelled) return
+        const rows = res.data?.data || res.data?.results || []
+        const map = {}
+        if (Array.isArray(rows)) {
+          rows.forEach((doc) => {
+            if (doc?.user && doc?.id) {
+              map[String(doc.user)] = doc.id
+            }
+          })
+        }
+        setDoctorProfileIdByUserId(map)
+      })
+      .catch(() => {
+        if (!cancelled) setDoctorProfileIdByUserId({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   React.useEffect(() => {
     if (debouncedPSearch.length < 2) {
@@ -580,7 +606,8 @@ function ErpBillingViewInner({
       const { data: invData } = await api.post('/pharmacy/invoices/', {
         patient: selectedPt.id,
         ipd_admission: linkedAdmission?.id || null,
-        referred_by: linkedAdmission?.assigned_doctor || null,
+        // IPD assigned_doctor is a User id; invoice referred_by expects DoctorProfile id.
+        referred_by: doctorProfileIdByUserId[String(linkedAdmission?.assigned_doctor || '')] || null,
         invoice_no: invoiceNo || undefined,
         date: invoiceDate || undefined,
         gst_enabled: gstEnabled,
