@@ -93,6 +93,51 @@ function formatMoney(n) {
   return `Rs ${v.toFixed(2)}`
 }
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** Patient name from API / billing (PatientSerializer includes middle_name). */
+function patientDisplayName(pd) {
+  if (!pd || typeof pd !== 'object') return ''
+  const parts = [pd.first_name, pd.middle_name, pd.last_name].filter(
+    (x) => x != null && String(x).trim() !== '',
+  )
+  return parts.map((x) => String(x).trim()).join(' ').trim()
+}
+
+/** One line: flat address or address_line1 + city + state from PatientSerializer. */
+function patientDisplayAddress(pd) {
+  if (!pd || typeof pd !== 'object') return '—'
+  const flat = String(pd.address ?? '').trim()
+  if (flat) return flat
+  const line1 = String(pd.address_line1 ?? '').trim()
+  const city = String(pd.city ?? '').trim()
+  const state = String(pd.state ?? '').trim()
+  const tail = [city, state].filter(Boolean).join(', ')
+  const joined = [line1, tail].filter(Boolean).join(', ').trim()
+  return joined || '—'
+}
+
+/** Referred doctor: nested doctor_details.name (API) or legacy string. */
+function invoiceDoctorDisplayName(inv) {
+  if (!inv || typeof inv !== 'object') return '—'
+  const fromNested = inv.doctor_details?.name
+  if (fromNested != null && String(fromNested).trim() !== '') return String(fromNested).trim()
+  const rb = inv.referred_by
+  if (rb != null && typeof rb === 'object' && rb.name != null && String(rb.name).trim() !== '') {
+    return String(rb.name).trim()
+  }
+  if (typeof rb === 'string' && rb.trim() !== '' && !/^[0-9a-f-]{36}$/i.test(rb.trim())) {
+    return rb.trim()
+  }
+  return '—'
+}
+
 /** Number of columns before QTY in the invoice grid. */
 function qtyColumnColspan(showGst) {
   return showGst ? 11 : 9
@@ -245,7 +290,10 @@ function buildInvoiceHtml({ invoice, outlet }) {
     ? `${biz.gst_number ? `<div>GSTIN : ${biz.gst_number}</div>` : ''}${biz.dl_number ? `<div>D.L.NO. : ${biz.dl_number}</div>` : ''}`
     : `${biz.dl_number ? `<div>D.L.NO. : ${biz.dl_number}</div>` : ''}`
 
-  const patientName = `${invoice.patient_details?.first_name || ''} ${invoice.patient_details?.last_name || ''}`.trim()
+  const pd = invoice.patient_details
+  const patientNameHtml = escapeHtml(patientDisplayName(pd) || '—')
+  const patientAddrHtml = escapeHtml(patientDisplayAddress(pd))
+  const doctorNameHtml = escapeHtml(invoiceDoctorDisplayName(invoice))
   const invoiceDate = safeFormat(invoice.created_at || new Date(), 'dd-MM-yyyy')
 
   return `<!DOCTYPE html>
@@ -281,12 +329,11 @@ function buildInvoiceHtml({ invoice, outlet }) {
         <div style="font-size:16px;font-weight:bold;text-align:center">${showGst ? 'GST INVOICE' : 'INVOICE'}</div>
       </div>
       <div style="flex:1.2;padding:8px 10px;font-size:9px;line-height:1.8">
-        <div><strong>Patient Name :</strong> ${patientName}</div>
-        <div><strong>Patient Address :</strong> ${invoice.patient_details?.address || '—'}</div>
-        <div><strong>UHID No. :</strong> ${invoice.patient_details?.uhid || '—'}</div>
-        <div><strong>Dr. Name :</strong> ${invoice.referred_by || '—'}</div>
+        <div><strong>Patient Name :</strong> ${patientNameHtml}</div>
+        <div><strong>Patient Address :</strong> ${patientAddrHtml}</div>
+        <div><strong>UHID No. :</strong> ${escapeHtml(invoice.patient_details?.uhid || '—')}</div>
+        <div><strong>Dr. Name :</strong> ${doctorNameHtml}</div>
         <div><strong>Payment :</strong> ${paymentMethod}</div>
-        ${showGst ? '<div><strong>GST :</strong></div>' : ''}
         <div style="display:flex;justify-content:space-between;margin-top:4px;border-top:1px solid #000;padding-top:4px">
           <span><strong>Invoice No. : ${invoice.invoice_no || ''}</strong></span>
           <span><strong>Date: ${invoiceDate}</strong></span>
@@ -412,6 +459,10 @@ export default function PharmacyInvoicePrint({ invoice, outlet, onClose }) {
   const dueAmount = Math.max(0, Number(invoice.due_amount ?? grandTotal - paidAmount))
   const paymentMethod = String(invoice.payment_method || 'cash').toUpperCase()
   const items = invoice.items || []
+  const pd = invoice.patient_details
+  const patientNameLabel = patientDisplayName(pd) || '—'
+  const patientAddrLabel = patientDisplayAddress(pd)
+  const doctorLabel = invoiceDoctorDisplayName(invoice)
 
   const biz = outlet || {}
   const title = (biz.business_name || 'Pharmacy').toUpperCase()
@@ -472,12 +523,11 @@ export default function PharmacyInvoicePrint({ invoice, outlet, onClose }) {
           </div>
 
           <div style={{ flex: 1.2, padding: '8px 10px', fontSize: '9px', lineHeight: '1.8' }}>
-            <div><strong>Patient Name :</strong> {invoice.patient_details?.first_name} {invoice.patient_details?.last_name}</div>
-            <div><strong>Patient Address :</strong> {invoice.patient_details?.address || '—'}</div>
+            <div><strong>Patient Name :</strong> {patientNameLabel}</div>
+            <div><strong>Patient Address :</strong> {patientAddrLabel}</div>
             <div><strong>UHID No. :</strong> {invoice.patient_details?.uhid || '—'}</div>
-            <div><strong>Dr. Name :</strong> {invoice.referred_by || '—'}</div>
+            <div><strong>Dr. Name :</strong> {doctorLabel}</div>
             <div><strong>Payment :</strong> {paymentMethod}</div>
-            {showGst ? <div><strong>GST :</strong></div> : null}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', borderTop: '1px solid #000', paddingTop: '4px' }}>
               <span><strong>Invoice No. : {invoice.invoice_no}</strong></span>
               <span><strong>Date: {safeFormat(invoice.created_at || new Date(), 'dd-MM-yyyy')}</strong></span>

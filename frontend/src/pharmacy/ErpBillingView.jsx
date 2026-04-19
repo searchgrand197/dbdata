@@ -214,7 +214,8 @@ function ErpBillingViewInner({
   const [searchLoading, setSearchLoading] = useState(false)
   /** When set, this row shows product search to replace medicine/batch (same row id). */
   const [replacingRowId, setReplacingRowId] = useState(null)
-  const [gstEnabled, setGstEnabled] = useState(false)
+  /** Default on so printed sale bills show CGST/SGST (matches invoice model default). */
+  const [gstEnabled, setGstEnabled] = useState(true)
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(defaultInvoiceDate)
   const [invoiceTime, setInvoiceTime] = useState(defaultInvoiceTime)
@@ -579,6 +580,7 @@ function ErpBillingViewInner({
       const { data: invData } = await api.post('/pharmacy/invoices/', {
         patient: selectedPt.id,
         ipd_admission: linkedAdmission?.id || null,
+        referred_by: linkedAdmission?.assigned_doctor || null,
         invoice_no: invoiceNo || undefined,
         date: invoiceDate || undefined,
         gst_enabled: gstEnabled,
@@ -666,11 +668,18 @@ function ErpBillingViewInner({
           batch: r.batch,
         }
       })
+      let invForPrint = invoice
+      try {
+        const { data: fullRes } = await api.get(`/pharmacy/invoices/${invoice.id}/`)
+        invForPrint = fullRes?.data || fullRes || invoice
+      } catch {
+        /* use create response */
+      }
       setPrintingInvoice({
-        ...invoice,
+        ...invForPrint,
         gst_enabled: gstEnabled,
         items: builtItems,
-        patient_details: selectedPt,
+        patient_details: invForPrint.patient_details || selectedPt,
         subtotal: taxableSubtotal,
         cgst,
         sgst,
