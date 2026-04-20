@@ -14,6 +14,7 @@ function SettingsPanelInner({ onSaved }) {
     email: '',
     website: '',
     default_gst_percent: '5',
+    default_sale_discount_percent: '0',
   })
 
   useEffect(() => {
@@ -37,6 +38,10 @@ function SettingsPanelInner({ onSaved }) {
               d.default_gst_percent != null && d.default_gst_percent !== ''
                 ? String(d.default_gst_percent)
                 : '5',
+            default_sale_discount_percent:
+              d.default_sale_discount_percent != null && d.default_sale_discount_percent !== ''
+                ? String(d.default_sale_discount_percent)
+                : '0',
           }))
       })
       .catch(() => {
@@ -73,6 +78,7 @@ function SettingsPanelInner({ onSaved }) {
     ['mobile', 'Mobile'],
     ['gst_number', 'GST number'],
     ['default_gst_percent', 'Default GST % (sales & purchase rows)'],
+    ['default_sale_discount_percent', 'Default sale discount % (new medicine)'],
     ['dl_number', 'D.L. number'],
     ['email', 'Email'],
     ['website', 'Website'],

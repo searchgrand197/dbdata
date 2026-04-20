@@ -13,6 +13,7 @@ import {
   Eye,
   PencilLine,
   SlidersHorizontal,
+  Trash2,
   LayoutDashboard,
   PanelLeftClose,
   PanelLeftOpen,
@@ -29,6 +30,12 @@ import PurchaseHistoryDashboard from '../pharmacy/PurchaseHistoryDashboard'
 import PharmacyDashboard from '../pharmacy/PharmacyDashboard'
 import PharmacyCategoriesView from '../pharmacy/PharmacyCategoriesView'
 import { parseApiError } from '../pharmacy/pharmacyCalculations'
+import {
+  resolveCategoryRules,
+  packFieldLabel,
+  baseFieldLabel,
+  conversionHintLines,
+} from '../pharmacy/categoryRulePresets'
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -291,6 +298,7 @@ export default function PharmacyPortal() {
           onClose={() => setShowAddMedicine(false)}
           onRefresh={fetchInitialData}
           defaultGstPercent={outletSettings?.default_gst_percent}
+          defaultSaleDiscountPercent={outletSettings?.default_sale_discount_percent}
         />
       )}
       {showAddPatient && (
@@ -324,31 +332,64 @@ function isLowStockRow(qty, stripSize) {
   const q = Number(qty) || 0
   const sp = Number(stripSize) || 0
   if (q <= 0) return true
-  if (sp > 0) return q < sp * 2
+  if (sp > 1) return q < sp * 2
   return q < 15
 }
 
+/** Prefer box > carton > strip; label matches JSON key (e.g. strip, box). */
 function preferredPackFromConversions(conversions = {}) {
-  const box = Number(conversions.box ?? conversions.BOX) || 0
-  if (box > 0) return { perPack: box, label: 'box' }
-  const strip = Number(conversions.strip ?? conversions.STRIP) || 0
-  if (strip > 0) return { perPack: strip, label: 'strip' }
+  const c = conversions && typeof conversions === 'object' ? conversions : {}
+  const tiers = [
+    ['box', 'BOX'],
+    ['carton', 'CARTON'],
+    ['strip', 'STRIP'],
+  ]
+  for (const [low, up] of tiers) {
+    const n = Number(c[low] ?? c[up]) || 0
+    if (n > 0) {
+      const labelKey = c[low] != null && c[low] !== '' ? low : up
+      return { perPack: n, label: String(labelKey).toLowerCase() }
+    }
+  }
   return { perPack: 0, label: 'pack' }
 }
 
+/**
+ * Human-readable stock: pack + remainder only when there is a real multi-pack (>1 base per pack).
+ * If pack size is 1 (e.g. 1x1), show base count only — avoids misleading "50 strips" when strip = 1 tablet.
+ */
 function formatPackAndBaseStock(baseQty, perPack, packLabel, baseLabel) {
   const q = Number(baseQty) || 0
   const pp = Number(perPack) || 0
   const bl = (baseLabel || 'unit').toLowerCase()
   const pl = (packLabel || 'pack').toLowerCase()
   if (q <= 0) return `0 ${bl}`
-  if (!(pp > 0)) return `${q % 1 === 0 ? q : q.toFixed(2)} ${bl}`
+  if (!(pp > 1)) {
+    const n = q % 1 === 0 ? q : Number(q.toFixed(2))
+    return `${n} ${bl}`
+  }
   const packs = Math.floor(q / pp)
   const rem = Math.round((q - packs * pp) * 100) / 100
   const parts = []
   if (packs > 0) parts.push(`${packs} ${pl}${packs === 1 ? '' : 's'}`)
   if (rem > 0) parts.push(`${rem % 1 === 0 ? rem : Number(rem.toFixed(2))} ${bl}`)
   return parts.length ? parts.join(' + ') : `0 ${bl}`
+}
+
+/**
+ * Labels for inventory qty display — same source as Add Medicine opening stock
+ * (`resolveCategoryRules` → base_unit_label / retail_pack_label), falling back to `medicine.unit_name`.
+ */
+function inventoryQtyLabels(medicine, categoryRows = []) {
+  const rules = resolveCategoryRules(medicine?.form, categoryRows)
+  const fromCat = String(rules.base_unit_label || '').trim()
+  const baseLabel = (fromCat || String(medicine?.unit_name || 'unit').trim() || 'unit').toLowerCase()
+  const conv = medicine?.unit_conversions || {}
+  const packPref = preferredPackFromConversions(conv)
+  const retail = String(rules.retail_pack_label || '').trim().toLowerCase()
+  const packLabel =
+    retail && ['strip', 'box', 'carton'].includes(packPref.label) ? retail : packPref.label
+  return { baseLabel, packLabel, perPack: packPref.perPack }
 }
 
 function normalizeStockLedgerList(res) {
@@ -389,6 +430,25 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
   const [detailBatch, setDetailBatch] = useState(null)
   const [rateBatch, setRateBatch] = useState(null)
   const [adjustBatch, setAdjustBatch] = useState(null)
+  const [deletingBatchId, setDeletingBatchId] = useState(null)
+  const [medicineCategoryRows, setMedicineCategoryRows] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .get('/medicine-categories/?limit=500')
+      .then((res) => {
+        if (cancelled) return
+        const rows = res.data?.data || res.data?.results || []
+        setMedicineCategoryRows(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setMedicineCategoryRows([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     try {
@@ -415,9 +475,11 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
       return tb - ta
     })
 
+  // Only show catalogue rows with no batch when searching — otherwise deleting the last
+  // batch would leave the product stuck in the table as "No batch" with no way to clear it visually.
   const medicinesWithoutBatch = medicines.filter((m) => {
     if (medIdsWithBatch.has(String(m.id))) return false
-    if (!qLower) return true
+    if (!qLower) return false
     return (
       (m.name || '').toLowerCase().includes(qLower) ||
       (m.sku || '').toLowerCase().includes(qLower)
@@ -425,6 +487,24 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
   })
 
   const totalRows = filtered.length + medicinesWithoutBatch.length
+
+  async function handleDeleteBatch(batch, med) {
+    const medName = med?.name || 'this item'
+    const ok = window.confirm(
+      `Delete inventory batch ${batch.batch_no || ''} for ${medName}?\n\nThis removes the batch record from inventory.`,
+    )
+    if (!ok) return
+    setDeletingBatchId(String(batch.id))
+    try {
+      await api.delete(`/batches/${batch.id}/`)
+      toast.success('Inventory batch deleted')
+      fetchInitialData?.()
+    } catch (e) {
+      toast.error(parseApiError(e) || 'Could not delete inventory batch')
+    } finally {
+      setDeletingBatchId(null)
+    }
+  }
 
   return (
     <div className="h-full flex flex-col gap-2 overflow-hidden min-w-0">
@@ -459,7 +539,7 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search name / batch"
+            placeholder="Search name / batch (includes products with no batch)"
             className="flex-1 bg-transparent text-[12px] font-medium outline-none min-w-0"
           />
         </div>
@@ -480,12 +560,10 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
             <tbody className="divide-y divide-slate-100">
               {filtered.map((b) => {
                 const med = medicineById.get(String(b.medicine))
-                const conv = med?.unit_conversions || {}
-                const packPref = preferredPackFromConversions(conv)
-                const baseLabel = (med?.unit_name || 'tab').toLowerCase()
+                const { baseLabel, packLabel, perPack } = inventoryQtyLabels(med, medicineCategoryRows)
                 const qty = Number(b.quantity ?? 0)
-                const stockLabel = formatPackAndBaseStock(qty, packPref.perPack, packPref.label, baseLabel)
-                const low = isLowStockRow(qty, packPref.perPack)
+                const stockLabel = formatPackAndBaseStock(qty, perPack, packLabel, baseLabel)
+                const low = isLowStockRow(qty, perPack)
                 const expCls = expiryRowClass(b.expiry_date)
                 return (
                   <tr
@@ -506,9 +584,11 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
                     <td className={`px-2 py-1 align-top tabular-nums ${expCls}`}>{safeFormat(b.expiry_date, 'MM/yy')}</td>
                     <td className="px-2 py-1 align-top text-emerald-800 font-medium leading-tight break-words">
                       <div>{stockLabel}</div>
-                      <div className="text-[9px] text-slate-400 font-mono tabular-nums">
-                        {qty % 1 === 0 ? qty : qty.toFixed(2)} {baseLabel} (base)
-                      </div>
+                      {perPack > 1 && (
+                        <div className="text-[9px] text-slate-400 font-mono tabular-nums">
+                          {qty % 1 === 0 ? qty : qty.toFixed(2)} {baseLabel} (base)
+                        </div>
+                      )}
                       {qty < 0 && <div className="text-[9px] text-rose-600 font-semibold">Below zero</div>}
                       {low && qty >= 0 && <div className="text-[9px] text-amber-700">Low stock</div>}
                     </td>
@@ -540,6 +620,15 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
                           className="p-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
                         >
                           <SlidersHorizontal size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete inventory"
+                          disabled={deletingBatchId === String(b.id)}
+                          onClick={() => handleDeleteBatch(b, med)}
+                          className="p-1 rounded border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Trash2 size={12} />
                         </button>
                       </div>
                     </td>
@@ -593,6 +682,7 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
         <InventoryBatchDetailModal
           batch={detailBatch.batch}
           medicine={detailBatch.medicine}
+          medicineCategoryRows={medicineCategoryRows}
           onClose={() => setDetailBatch(null)}
         />
       )}
@@ -611,6 +701,7 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
         <InventoryAdjustStockModal
           batch={adjustBatch.batch}
           medicine={adjustBatch.medicine}
+          medicineCategoryRows={medicineCategoryRows}
           allowNegative={allowNegative}
           onClose={() => setAdjustBatch(null)}
           onSaved={() => {
@@ -623,7 +714,7 @@ function InventoryView({ medicines, batches, setShowAddMedicine, fetchInitialDat
   )
 }
 
-function InventoryBatchDetailModal({ batch, medicine, onClose }) {
+function InventoryBatchDetailModal({ batch, medicine, medicineCategoryRows = [], onClose }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -647,9 +738,7 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
     }
   }, [batch.id])
 
-  const conv = medicine?.unit_conversions || {}
-  const packPref = preferredPackFromConversions(conv)
-  const baseLabel = (medicine?.unit_name || 'tab').toLowerCase()
+  const { baseLabel, packLabel, perPack } = inventoryQtyLabels(medicine, medicineCategoryRows)
   const qty = Number(batch.quantity ?? 0)
 
   return (
@@ -674,12 +763,14 @@ function InventoryBatchDetailModal({ batch, medicine, onClose }) {
             <dd className="font-mono">{batch.batch_no}</dd>
             <dt className="text-slate-500">Expiry</dt>
             <dd className={expiryRowClass(batch.expiry_date)}>{safeFormat(batch.expiry_date, 'dd MMM yyyy')}</dd>
-            <dt className="text-slate-500">Stock (base)</dt>
+            <dt className="text-slate-500">Stock</dt>
             <dd>
-              {formatPackAndBaseStock(qty, packPref.perPack, packPref.label, baseLabel)}
-              <span className="text-slate-400 ml-1 font-mono">
-                ({qty % 1 === 0 ? qty : qty.toFixed(2)} {baseLabel})
-              </span>
+              {formatPackAndBaseStock(qty, perPack, packLabel, baseLabel)}
+              {perPack > 1 && (
+                <span className="text-slate-400 ml-1 font-mono">
+                  ({qty % 1 === 0 ? qty : qty.toFixed(2)} {baseLabel})
+                </span>
+              )}
             </dd>
             <dt className="text-slate-500">MRP</dt>
             <dd className="tabular-nums">₹{Number(batch.mrp ?? 0).toFixed(2)}</dd>
@@ -801,7 +892,7 @@ function InventoryEditRateModal({ batch, medicine, onClose, onSaved }) {
   )
 }
 
-function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, onSaved }) {
+function InventoryAdjustStockModal({ batch, medicine, medicineCategoryRows = [], allowNegative, onClose, onSaved }) {
   const [adjustQty, setAdjustQty] = useState('')
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
@@ -829,6 +920,7 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
   }, [batch.id])
 
   const current = Number(batch.quantity ?? 0)
+  const { baseLabel: stockBaseLabel } = inventoryQtyLabels(medicine, medicineCategoryRows)
   const adj = adjustQty === '' || adjustQty === '-' ? 0 : Number(adjustQty)
   const projected = current + (Number.isFinite(adj) ? adj : 0)
   const invalidAdj = !Number.isFinite(adj) || adj === 0
@@ -896,8 +988,10 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
             <div className="font-mono">{batch.batch_no}</div>
           </div>
           <div>
-            <span className="text-slate-500">Current stock (base)</span>
-            <div className="font-mono font-semibold text-emerald-800">{current % 1 === 0 ? current : current.toFixed(3)}</div>
+            <span className="text-slate-500">Current stock</span>
+            <div className="font-mono font-semibold text-emerald-800">
+              {current % 1 === 0 ? current : current.toFixed(3)} <span className="font-sans font-medium">{stockBaseLabel}</span>
+            </div>
           </div>
           <div className="rounded border border-slate-100 bg-slate-50/80 px-2 py-1.5">
             <div className="text-[9px] font-bold text-slate-500 uppercase mb-1">Stock history</div>
@@ -935,7 +1029,9 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
             )}
           </div>
           <label className="block">
-            <span className="text-[9px] font-semibold text-slate-600">Adjust qty (+ in / − out)</span>
+            <span className="text-[9px] font-semibold text-slate-600">
+              Adjust qty (+ in / − out) · {stockBaseLabel}
+            </span>
             <input
               value={adjustQty}
               onChange={(e) => setAdjustQty(e.target.value)}
@@ -947,7 +1043,8 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
           <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1">
             <span className="text-slate-500">New stock</span>
             <div className={`font-mono font-semibold ${projected < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-              {Number.isFinite(projected) ? (projected % 1 === 0 ? projected : projected.toFixed(3)) : '—'}
+              {Number.isFinite(projected) ? (projected % 1 === 0 ? projected : projected.toFixed(3)) : '—'}{' '}
+              <span className="font-sans font-medium">{stockBaseLabel}</span>
             </div>
             {projected < 0 && !allowNegative && (
               <div className="text-[9px] text-rose-600 mt-0.5">Blocked: negative not allowed (see toolbar toggle).</div>
@@ -987,12 +1084,16 @@ function InventoryAdjustStockModal({ batch, medicine, allowNegative, onClose, on
 
 function HistoryView({ invoices: _invoices, setPrintingInvoice }) {
   const PAGE_SIZE = 15
+  const [subView, setSubView] = useState('register')
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(0)
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState('')
   const [editInv, setEditInv] = useState(null)
+  const [pendingRows, setPendingRows] = useState([])
+  const [pendingMeta, setPendingMeta] = useState({ total_pending_amount: '0.00', total_patients: 0 })
+  const [pendingLoading, setPendingLoading] = useState(false)
 
   const fetchRows = useCallback(async () => {
     setLoading(true)
@@ -1012,13 +1113,62 @@ function HistoryView({ invoices: _invoices, setPrintingInvoice }) {
   }, [page, q])
 
   useEffect(() => {
-    fetchRows()
-  }, [fetchRows])
+    if (subView === 'register') fetchRows()
+  }, [fetchRows, subView])
+
+  const fetchPendingRows = useCallback(async () => {
+    setPendingLoading(true)
+    try {
+      const { data } = await api.get('/pharmacy/invoices/pending-credits/', {
+        params: { search: q || undefined },
+      })
+      setPendingRows(data?.data || [])
+      setPendingMeta({
+        total_pending_amount: data?.meta?.total_pending_amount || '0.00',
+        total_patients: Number(data?.meta?.total_patients || 0),
+      })
+    } catch {
+      toast.error('Failed to load pending credit list')
+      setPendingRows([])
+      setPendingMeta({ total_pending_amount: '0.00', total_patients: 0 })
+    } finally {
+      setPendingLoading(false)
+    }
+  }, [q])
+
+  useEffect(() => {
+    if (subView === 'pending') fetchPendingRows()
+  }, [fetchPendingRows, subView])
 
   return (
     <div className="h-full flex flex-col gap-3 overflow-hidden min-h-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 rounded-xl p-3">
       <div className="flex items-center justify-between gap-2 shrink-0">
-        <h2 className="text-base font-bold text-slate-900">Sale register</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-bold text-slate-900">Pharmacy register</h2>
+          <div className="flex gap-1 bg-white border border-slate-200 rounded-lg p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setSubView('register')
+                setPage(0)
+              }}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold ${
+                subView === 'register' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Sale register
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubView('pending')}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold ${
+                subView === 'pending' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Pending credit
+            </button>
+          </div>
+        </div>
         <div className="relative w-full max-w-xs">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
           <input
@@ -1027,99 +1177,165 @@ function HistoryView({ invoices: _invoices, setPrintingInvoice }) {
               setPage(0)
               setQ(e.target.value)
             }}
-            placeholder="Search invoice / patient"
+            placeholder={subView === 'pending' ? 'Search patient / UHID / invoice' : 'Search invoice / patient'}
             className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2 py-1.5 text-xs outline-none focus:border-blue-500"
           />
         </div>
       </div>
 
-      <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-y-auto min-h-0 shadow-sm">
-        <table className="w-full text-left text-[11px]">
-          <thead className="bg-gradient-to-b from-slate-100 to-slate-50 sticky top-0 z-10 text-[10px] font-bold text-slate-500 uppercase">
-            <tr>
-              <th className="px-3 py-2">Invoice</th>
-              <th className="px-3 py-2">Patient</th>
-              <th className="px-3 py-2">Method</th>
-              <th className="px-3 py-2 text-right">Paid</th>
-              <th className="px-3 py-2 text-right">Due</th>
-              <th className="px-3 py-2 text-right">Total</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading ? (
-              <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">Loading…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">No invoices found</td></tr>
-            ) : rows.map((inv) => {
-              const totalAmt = Number(inv.grand_total || 0)
-              const paidAmt = Number(inv.paid_amount || 0)
-              const dueAmt = Math.max(0, Number(inv.due_amount ?? totalAmt - paidAmt))
-              return (
-                <tr key={inv.id} className="hover:bg-indigo-50/30">
-                  <td className="px-3 py-2 text-blue-700 font-mono text-[10px]">#{inv.invoice_no}</td>
-                  <td className="px-3 py-2">
-                    <div className="font-medium">
-                      {inv.patient_details?.first_name} {inv.patient_details?.last_name}
-                    </div>
-                    <div className="text-[10px] text-slate-400">{safeFormat(inv.created_at, 'dd MMM yy HH:mm')}</div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className="text-[10px] uppercase font-bold bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
-                      {inv.payment_method || 'cash'}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right font-semibold text-emerald-700">₹{paidAmt.toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right font-semibold text-amber-700">₹{dueAmt.toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right font-semibold">₹{totalAmt.toFixed(2)}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex justify-end gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setPrintingInvoice(inv)}
-                        className="px-2 py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-[10px] font-semibold"
-                      >
-                        View
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditInv(inv)}
-                        className="px-2 py-1 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-[10px] font-semibold"
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="shrink-0 flex items-center justify-between text-xs text-slate-600">
-        <span>
-          {total === 0 ? 'No records' : `Showing ${page * PAGE_SIZE + 1}-${Math.min((page + 1) * PAGE_SIZE, total)} of ${total}`}
-        </span>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
-          >
-            Prev
-          </button>
-          <button
-            type="button"
-            disabled={(page + 1) * PAGE_SIZE >= total}
-            onClick={() => setPage((p) => p + 1)}
-            className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
-          >
-            Next
-          </button>
+      {subView === 'register' ? (
+        <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-y-auto min-h-0 shadow-sm">
+          <table className="w-full text-left text-[11px]">
+            <thead className="bg-gradient-to-b from-slate-100 to-slate-50 sticky top-0 z-10 text-[10px] font-bold text-slate-500 uppercase">
+              <tr>
+                <th className="px-3 py-2">Invoice</th>
+                <th className="px-3 py-2">Patient</th>
+                <th className="px-3 py-2">Method</th>
+                <th className="px-3 py-2 text-right">Paid</th>
+                <th className="px-3 py-2 text-right">Due</th>
+                <th className="px-3 py-2 text-right">Total</th>
+                <th className="px-3 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">Loading…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">No invoices found</td></tr>
+              ) : rows.map((inv) => {
+                const totalAmt = Number(inv.grand_total || 0)
+                const paidAmt = Number(inv.paid_amount || 0)
+                const dueAmt = Math.max(0, Number(inv.due_amount ?? totalAmt - paidAmt))
+                return (
+                  <tr key={inv.id} className="hover:bg-indigo-50/30">
+                    <td className="px-3 py-2 text-blue-700 font-mono text-[10px]">#{inv.invoice_no}</td>
+                    <td className="px-3 py-2">
+                      <div className="font-medium">
+                        {inv.patient_details?.first_name} {inv.patient_details?.last_name}
+                      </div>
+                      <div className="text-[10px] text-slate-400">{safeFormat(inv.created_at, 'dd MMM yy HH:mm')}</div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="text-[10px] uppercase font-bold bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                        {inv.payment_method || 'cash'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold text-emerald-700">₹{paidAmt.toFixed(2)}</td>
+                    <td className="px-3 py-2 text-right font-semibold text-amber-700">₹{dueAmt.toFixed(2)}</td>
+                    <td className="px-3 py-2 text-right font-semibold">₹{totalAmt.toFixed(2)}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setPrintingInvoice(inv)}
+                          className="px-2 py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-700 text-[10px] font-semibold"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditInv(inv)}
+                          className="px-2 py-1 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-[10px] font-semibold"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
-      </div>
+      ) : (
+        <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-y-auto min-h-0 shadow-sm p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-xs text-slate-500">Patients with pending pharmacy credit</div>
+            <div className="text-sm font-bold text-rose-700">
+              Total pending: ₹{Number(pendingMeta.total_pending_amount || 0).toFixed(2)}
+            </div>
+          </div>
+          {pendingLoading ? (
+            <div className="px-3 py-8 text-center text-slate-400 text-sm">Loading pending credits…</div>
+          ) : pendingRows.length === 0 ? (
+            <div className="px-3 py-8 text-center text-slate-400 text-sm">No pending credit bills found</div>
+          ) : (
+            <div className="space-y-3">
+              {pendingRows.map((pt) => (
+                <div key={pt.patient_id} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="bg-slate-50 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-slate-900">{pt.patient_name}</div>
+                      <div className="text-[10px] text-slate-500">
+                        UHID: {pt.uhid || '—'}{pt.phone ? ` · ${pt.phone}` : ''} · Bills: {pt.bill_count}
+                      </div>
+                    </div>
+                    <div className="text-sm font-bold text-amber-700">
+                      ₹{Number(pt.total_pending_amount || 0).toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-[11px]">
+                      <thead className="bg-white text-[10px] uppercase text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2">Invoice</th>
+                          <th className="px-3 py-2">Date</th>
+                          <th className="px-3 py-2 text-right">Total</th>
+                          <th className="px-3 py-2 text-right">Paid</th>
+                          <th className="px-3 py-2 text-right">Due</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(pt.bills || []).map((bill) => (
+                          <tr key={bill.id}>
+                            <td className="px-3 py-2 font-mono text-blue-700">#{bill.invoice_no}</td>
+                            <td className="px-3 py-2 text-slate-600">{safeFormat(bill.date, 'dd MMM yyyy')}</td>
+                            <td className="px-3 py-2 text-right">₹{Number(bill.grand_total || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right">₹{Number(bill.paid_amount || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right font-semibold text-amber-700">
+                              ₹{Number(bill.due_amount || 0).toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {subView === 'register' ? (
+        <div className="shrink-0 flex items-center justify-between text-xs text-slate-600">
+          <span>
+            {total === 0 ? 'No records' : `Showing ${page * PAGE_SIZE + 1}-${Math.min((page + 1) * PAGE_SIZE, total)} of ${total}`}
+          </span>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              disabled={(page + 1) * PAGE_SIZE >= total}
+              onClick={() => setPage((p) => p + 1)}
+              className="px-2 py-1 rounded border border-slate-200 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="shrink-0 text-xs text-slate-600">
+          {pendingMeta.total_patients || 0} patient(s) with pending credit
+        </div>
+      )}
 
       {editInv ? (
         <EditSaleInvoiceModal
@@ -1220,6 +1436,16 @@ function resolveNewMedicineDefaultGst(defaultGstPercent) {
   return Number.isFinite(n) && n >= 0 ? String(n) : '5'
 }
 
+function resolveNewMedicineDefaultDiscount(defaultDiscountPercent) {
+  const s =
+    defaultDiscountPercent != null && String(defaultDiscountPercent).trim() !== ''
+      ? String(defaultDiscountPercent).trim()
+      : ''
+  if (s === '') return '0'
+  const n = Number(s)
+  return Number.isFinite(n) && n >= 0 ? String(n) : '0'
+}
+
 const DEFAULT_PRODUCT_FORMS = [
   'Tablet', 'Syrup', 'Capsule', 'Injection', 'Cream', 'Powder', 'Drops', 'Surgicals', 'Liquid', 'Gel',
   'Suspension', 'Lotion', 'Soap', 'Oil', 'Ointment', 'Kit', 'Bandage', 'Device', 'Spray', 'Shampoo',
@@ -1242,6 +1468,15 @@ function uniqText(values) {
 }
 
 /** Unit-level MRP, sale rate, cost, and discount % for Add Medicine (matches pack vs unit input mode). */
+function discountPercentFromMrpAndRate(mrp, rate) {
+  const m = Number(mrp) || 0
+  const rt = Number(rate) || 0
+  if (!(m > 0)) return 0
+  const raw = ((m - rt) / m) * 100
+  if (!Number.isFinite(raw)) return 0
+  return Math.min(100, Math.max(0, Math.round(raw * 100) / 100))
+}
+
 function computeUnitPricingForAddMedicine(data, unitsPerPack) {
   const up = unitsPerPack > 0 ? unitsPerPack : 1
   const enteredMrp = Number(data.mrp) || 0
@@ -1280,8 +1515,23 @@ function formatMoneyInput(v) {
   return n.toFixed(2)
 }
 
-function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
+function normalizeNonNegativeNumberInput(raw) {
+  const text = String(raw ?? '').trim()
+  if (text === '') return ''
+  const value = Number(text)
+  if (!Number.isFinite(value) || value < 0) return null
+  return text
+}
+
+function formatStockNumber(value) {
+  if (!Number.isFinite(value)) return ''
+  if (value % 1 === 0) return String(value)
+  return String(Math.round(value * 1000) / 1000)
+}
+
+function AddMedicineModal({ onClose, onRefresh, defaultGstPercent, defaultSaleDiscountPercent }) {
   const fallbackGstStr = resolveNewMedicineDefaultGst(defaultGstPercent)
+  const fallbackDiscountStr = resolveNewMedicineDefaultDiscount(defaultSaleDiscountPercent)
   const [data, setData] = useState({
     name: '',
     company_name: '',
@@ -1289,6 +1539,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     composition: '',
     mrp: '',
     selling_price: '',
+    discount_percent: fallbackDiscountStr,
     cost_price: '',
     mrp_input_type: 'unit',
     price_tax_mode: 'exclusive',
@@ -1301,6 +1552,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
     batch_no: '',
     expiry_date: '',
     opening_stock_qty: '',
+    opening_stock_pack_qty: '',
   })
   const [units, setUnits] = useState([])
   const [forms, setForms] = useState([])
@@ -1308,6 +1560,11 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
   const [submitting, setSubmitting] = useState(false)
   const [showFormOptions, setShowFormOptions] = useState(false)
   const [creatingForm, setCreatingForm] = useState(false)
+  const [openingStockEditedBy, setOpeningStockEditedBy] = useState('units')
+  const [medicineCategoryRows, setMedicineCategoryRows] = useState([])
+  const [pricingEditedBy, setPricingEditedBy] = useState(
+    Number(fallbackDiscountStr || 0) > 0 ? 'discount' : 'selling',
+  )
 
   const unitPricingPreview = useMemo(() => {
     const unitsPerPack =
@@ -1332,7 +1589,9 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
         setUnits(Array.isArray(unitsList) ? unitsList : [])
 
         const catRows = cRes.data?.data || cRes.data?.results || []
-        const catNames = Array.isArray(catRows) ? catRows.map((r) => r.name) : []
+        const catList = Array.isArray(catRows) ? catRows : []
+        setMedicineCategoryRows(catList)
+        const catNames = catList.map((r) => r.name)
 
         const medRows = mRes.data?.data || mRes.data?.results || []
         const medForms = Array.isArray(medRows) ? medRows.map((m) => m.form) : []
@@ -1344,6 +1603,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
       .catch(() => {
         if (cancelled) return
         setUnits([])
+        setMedicineCategoryRows([])
         setForms(DEFAULT_PRODUCT_FORMS)
         setBatchOptions([])
       })
@@ -1353,6 +1613,15 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
   }, [])
 
   const pricingLocked = !!(data.add_batch && data.batch_mode === 'existing' && data.existing_batch_id)
+  const openingUnitsPerPack = Math.max(0, Number(data.units_per_pack) || 0)
+  const activeCategoryRules = useMemo(
+    () => resolveCategoryRules(data.form, medicineCategoryRows),
+    [data.form, medicineCategoryRows],
+  )
+  const conversionHints = useMemo(
+    () => conversionHintLines(activeCategoryRules, data.units_per_pack, data.mrp_input_type),
+    [activeCategoryRules, data.units_per_pack, data.mrp_input_type],
+  )
 
   useEffect(() => {
     if (!data.add_batch || data.batch_mode !== 'existing' || !data.existing_batch_id) return
@@ -1370,9 +1639,118 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
       ...d,
       mrp: formatMoneyInput(uMrp * mult),
       selling_price: formatMoneyInput(uSale * mult),
+      discount_percent: discountPercentFromMrpAndRate(uMrp, uSale).toFixed(2),
       cost_price: formatMoneyInput(uCost * mult),
     }))
+    setPricingEditedBy('selling')
   }, [data.add_batch, data.batch_mode, data.existing_batch_id, batchOptions, data.mrp_input_type, data.units_per_pack])
+
+  useEffect(() => {
+    if (pricingLocked) return
+    if (pricingEditedBy !== 'discount') return
+    const enteredMrp = Number(data.mrp)
+    if (!(Number.isFinite(enteredMrp) && enteredMrp > 0)) return
+    const discountRaw = String(data.discount_percent ?? '').trim()
+    if (discountRaw === '' || discountRaw === '.' || discountRaw === '-') return
+    const discountPct = Math.min(100, Math.max(0, Number(discountRaw) || 0))
+    const saleEntered = enteredMrp * (1 - discountPct / 100)
+    const saleNormalized = Math.round(saleEntered * 100) / 100
+    const saleText = String(data.selling_price ?? '').trim()
+    const currentSale = saleText === '' || saleText === '.' || saleText === '-' ? null : Number(saleText)
+    if (currentSale != null && Number.isFinite(currentSale) && Math.abs(currentSale - saleNormalized) < 0.005) return
+    setData((d) => ({ ...d, selling_price: formatMoneyInput(saleNormalized) }))
+  }, [data.discount_percent, data.mrp, pricingEditedBy, pricingLocked])
+
+  useEffect(() => {
+    if (pricingLocked) return
+    if (pricingEditedBy !== 'selling') return
+    const unitsPerPack =
+      data.mrp_input_type === 'unit'
+        ? 1
+        : Math.max(0, Number(data.units_per_pack) || 0)
+    if (data.mrp_input_type === 'pack' && !(unitsPerPack > 0)) return
+    const preview = computeUnitPricingForAddMedicine(data, unitsPerPack)
+    if (!(preview?.unitMrp > 0)) return
+    const nextDiscount = preview.discountPct != null ? preview.discountPct.toFixed(2) : '0.00'
+    if (String(data.discount_percent ?? '') === nextDiscount) return
+    setData((d) => ({ ...d, discount_percent: nextDiscount }))
+  }, [data.mrp, data.selling_price, data.mrp_input_type, data.units_per_pack, pricingEditedBy, pricingLocked])
+
+  useEffect(() => {
+    if (!data.add_batch) return
+    if (data.mrp_input_type !== 'pack') {
+      if (data.opening_stock_pack_qty !== '') {
+        setData((d) => ({ ...d, opening_stock_pack_qty: '' }))
+      }
+      return
+    }
+    if (!(openingUnitsPerPack > 0)) {
+      if (data.opening_stock_pack_qty !== '') {
+        setData((d) => ({ ...d, opening_stock_pack_qty: '' }))
+      }
+      return
+    }
+    if (openingStockEditedBy === 'pack') {
+      const packs = Number(data.opening_stock_pack_qty)
+      if (data.opening_stock_pack_qty !== '' && Number.isFinite(packs) && packs >= 0) {
+        const unitsValue = packs * openingUnitsPerPack
+        const normalizedUnits = formatStockNumber(unitsValue)
+        if (normalizedUnits !== data.opening_stock_qty) {
+          setData((d) => ({ ...d, opening_stock_qty: normalizedUnits }))
+        }
+      }
+      return
+    }
+    const unitsValue = Number(data.opening_stock_qty)
+    if (data.opening_stock_qty !== '' && Number.isFinite(unitsValue) && unitsValue >= 0) {
+      const packs = unitsValue / openingUnitsPerPack
+      const normalizedPacks = formatStockNumber(packs)
+      if (normalizedPacks !== data.opening_stock_pack_qty) {
+        setData((d) => ({ ...d, opening_stock_pack_qty: normalizedPacks }))
+      }
+    }
+  }, [
+    data.add_batch,
+    data.mrp_input_type,
+    data.opening_stock_pack_qty,
+    data.opening_stock_qty,
+    openingStockEditedBy,
+    openingUnitsPerPack,
+  ])
+
+  function handleOpeningStockUnitsChange(rawValue) {
+    const normalized = normalizeNonNegativeNumberInput(rawValue)
+    if (normalized === null) return
+    setOpeningStockEditedBy('units')
+    if (normalized === '') {
+      setData((d) => ({ ...d, opening_stock_qty: '', opening_stock_pack_qty: '' }))
+      return
+    }
+    const unitsValue = Number(normalized)
+    if (data.mrp_input_type === 'pack' && openingUnitsPerPack > 0) {
+      const packValue = formatStockNumber(unitsValue / openingUnitsPerPack)
+      setData((d) => ({ ...d, opening_stock_qty: normalized, opening_stock_pack_qty: packValue }))
+    } else {
+      setData((d) => ({ ...d, opening_stock_qty: normalized, opening_stock_pack_qty: '' }))
+    }
+  }
+
+  function handleOpeningStockPackChange(rawValue) {
+    const normalized = normalizeNonNegativeNumberInput(rawValue)
+    if (normalized === null) return
+    setOpeningStockEditedBy('pack')
+    if (normalized === '') {
+      setData((d) => ({ ...d, opening_stock_pack_qty: '', opening_stock_qty: '' }))
+      return
+    }
+    if (!(openingUnitsPerPack > 0)) {
+      setData((d) => ({ ...d, opening_stock_pack_qty: normalized }))
+      return
+    }
+    const packsValue = Number(normalized)
+    const unitsValue = formatStockNumber(packsValue * openingUnitsPerPack)
+    setData((d) => ({ ...d, opening_stock_pack_qty: normalized, opening_stock_qty: unitsValue }))
+  }
 
   async function handleAdd() {
     if (!data.name.trim()) return toast.error('Product name is required')
@@ -1543,19 +1921,19 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center p-2 md:p-3">
-      <div className="bg-white w-[86vw] md:w-[64vw] lg:w-[50vw] max-w-3xl rounded-xl shadow-xl border border-slate-200 overflow-hidden origin-center scale-[0.88] md:scale-[0.92] lg:scale-[0.95]">
-        <div className="p-2">
-          <div className="flex justify-between items-center mb-1 border-b border-slate-100 pb-1">
-            <h3 className="text-[15px] font-bold text-slate-900">Create New Product</h3>
-            <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="space-y-1.5">
-            <section className="space-y-1">
-              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Basic Info</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-                <label className="block md:col-span-2">
+      <div className="bg-white w-[94vw] md:w-[min(72rem,96vw)] max-w-6xl max-h-[90vh] flex flex-col rounded-xl shadow-xl border border-slate-200 overflow-hidden origin-center scale-[0.88] md:scale-[0.92] lg:scale-[0.95]">
+        <div className="p-2 shrink-0 border-b border-slate-100 flex justify-between items-center">
+          <h3 className="text-[15px] font-bold text-slate-900">Create New Product</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="p-2 overflow-y-auto min-h-0 flex-1">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4 md:items-start">
+            <section className="space-y-1 min-w-0 md:border-r md:border-slate-200 md:pr-3">
+              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Product info</p>
+              <div className="grid grid-cols-1 gap-1.5">
+                <label className="block">
                   <span className="text-[10px] font-semibold text-slate-700">Product Name*</span>
                   <input
                     type="text"
@@ -1624,11 +2002,145 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                     )}
                   </div>
                 </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">Composition</span>
+                  <input
+                    type="text"
+                    value={data.composition}
+                    onChange={(e) => setData({ ...data, composition: e.target.value })}
+                    placeholder="Optional"
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
+                  />
+                </label>
               </div>
             </section>
 
-            <section className="space-y-1 border-t border-slate-100 pt-1">
-              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Batch Details</p>
+            <section className="space-y-1 min-w-0 border-t border-slate-100 pt-3 mt-1 md:mt-0 md:pt-0 md:border-t-0 md:border-r md:border-slate-200 md:pr-3">
+              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Pricing</p>
+              {pricingLocked && (
+                <p className="text-[9px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-2 py-1">
+                  MRP, selling price, and cost are taken from the selected batch and cannot be edited. You can still
+                  switch <strong>1 unit</strong> vs <strong>Full pack</strong> and set <strong>Units / pack</strong> for
+                  how amounts are shown; opening stock and tax in <strong>Stock and Tax info</strong> stay editable.
+                </p>
+              )}
+              <div className="grid grid-cols-1 gap-1.5">
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">Price Input Type</span>
+                  <div className="mt-1 grid grid-cols-2 gap-1.5 w-full">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpeningStockEditedBy('units')
+                        setData((d) => ({ ...d, mrp_input_type: 'unit', units_per_pack: '1' }))
+                      }}
+                      className={`border rounded-md px-2 py-0.5 text-[10px] font-semibold ${
+                        data.mrp_input_type === 'unit'
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-white border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      1 unit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setData((d) => ({ ...d, mrp_input_type: 'pack' }))}
+                      className={`border rounded-md px-2 py-0.5 text-[10px] font-semibold ${
+                        data.mrp_input_type === 'pack'
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-white border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      Full pack
+                    </button>
+                  </div>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    MRP* {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                  </span>
+                  <input
+                    type="number"
+                    value={data.mrp}
+                    onChange={(e) => setData({ ...data, mrp: e.target.value })}
+                    placeholder="0.00"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">Units / Pack*</span>
+                  <input
+                    type="number"
+                    value={data.units_per_pack}
+                    onChange={(e) => setData({ ...data, units_per_pack: e.target.value })}
+                    placeholder={data.mrp_input_type === 'unit' ? '1 (fixed)' : 'e.g. 10'}
+                    disabled={data.mrp_input_type === 'unit'}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                  />
+                  {data.form?.trim() && conversionHints.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-[9px] text-indigo-800 font-medium list-disc pl-3.5">
+                      {conversionHints.map((line, idx) => (
+                        <li key={`${idx}-${line}`}>{line}</li>
+                      ))}
+                    </ul>
+                  )}
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    Selling price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                  </span>
+                  <input
+                    type="number"
+                    value={data.selling_price}
+                    onChange={(e) => {
+                      setPricingEditedBy('selling')
+                      setData({ ...data, selling_price: e.target.value })
+                    }}
+                    placeholder="Leave empty to use MRP"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    Cost price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={data.cost_price}
+                    onChange={(e) => setData({ ...data, cost_price: e.target.value })}
+                    placeholder="Optional — purchase rate"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-semibold text-slate-700">Discount %</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={data.discount_percent}
+                    onChange={(e) => {
+                      setPricingEditedBy('discount')
+                      setData({ ...data, discount_percent: e.target.value })
+                    }}
+                    placeholder="0"
+                    disabled={pricingLocked}
+                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+                  />
+                  <p className="mt-0.5 text-[9px] text-slate-400">
+                    Enter selling price to auto-calc discount, or enter discount to auto-calc selling price.
+                  </p>
+                </label>
+              </div>
+            </section>
+
+            <section className="space-y-1 min-w-0 border-t border-slate-100 pt-3 mt-1 md:mt-0 md:pt-0 md:border-t-0">
+              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Stock and Tax info</p>
+              <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-wide">Batch</p>
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -1712,126 +2224,54 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                       </p>
                     </label>
                   )}
-                  <label className="block">
-                    <span className="text-[10px] font-semibold text-slate-700">Opening stock (qty)</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={data.opening_stock_qty}
-                      onChange={(e) => setData((d) => ({ ...d, opening_stock_qty: e.target.value }))}
-                      placeholder="0 — base units (e.g. tablets)"
-                      className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
-                    />
-                    <p className="mt-0.5 text-[9px] text-slate-500">
-                      Same units as inventory / billing (tablets, etc.). Empty or 0 = no opening receipt; you can adjust later.
-                    </p>
-                  </label>
                 </div>
               )}
-            </section>
-
-            <section className="space-y-1 border-t border-slate-100 pt-1">
-              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Pricing</p>
-              {pricingLocked && (
-                <p className="text-[9px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-2 py-1">
-                  MRP, selling price, and cost are taken from the selected batch and cannot be edited. You can still
-                  switch <strong>1 unit</strong> vs <strong>Full pack</strong> and set <strong>Units / pack</strong> for
-                  how amounts are shown; opening stock and GST below stay editable.
-                </p>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-                <label className="block md:col-span-2">
-                  <span className="text-[10px] font-semibold text-slate-700">Price Input Type</span>
-                  <div className="mt-1 grid grid-cols-2 gap-1.5 w-full max-w-[320px]">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setData((d) => ({ ...d, mrp_input_type: 'unit', units_per_pack: '1' }))
-                      }
-                      className={`border rounded-md px-2 py-0.5 text-[10px] font-semibold ${
-                        data.mrp_input_type === 'unit'
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'bg-white border-slate-300 text-slate-700'
-                      }`}
+              <div className="grid grid-cols-1 gap-1.5 pt-1 border-t border-slate-50">
+                {data.add_batch && (
+                  <div className="block">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Opening stock</span>
+                    <div
+                      className={`mt-1 grid gap-1.5 ${data.mrp_input_type === 'pack' ? 'grid-cols-2' : 'grid-cols-1'}`}
                     >
-                      1 unit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setData((d) => ({ ...d, mrp_input_type: 'pack' }))}
-                      className={`border rounded-md px-2 py-0.5 text-[10px] font-semibold ${
-                        data.mrp_input_type === 'pack'
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'bg-white border-slate-300 text-slate-700'
-                      }`}
-                    >
-                      Full pack
-                    </button>
+                      {data.mrp_input_type === 'pack' && (
+                        <label className="block">
+                          <span className="text-[10px] font-semibold text-slate-600">{packFieldLabel(activeCategoryRules)}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={data.opening_stock_pack_qty}
+                            onChange={(e) => handleOpeningStockPackChange(e.target.value)}
+                            placeholder="0"
+                            disabled={!(openingUnitsPerPack > 0)}
+                            className="mt-0.5 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                          />
+                        </label>
+                      )}
+                      <label className="block">
+                        <span className="text-[10px] font-semibold text-slate-600">{baseFieldLabel(activeCategoryRules)}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={data.opening_stock_qty}
+                          onChange={(e) => handleOpeningStockUnitsChange(e.target.value)}
+                          placeholder="0"
+                          className="mt-0.5 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
+                        />
+                      </label>
+                    </div>
+                    <p className="mt-0.5 text-[9px] text-slate-500">
+                      {data.mrp_input_type === 'unit'
+                        ? `Enter opening stock in ${baseFieldLabel(activeCategoryRules).toLowerCase()} (same as inventory when pricing per unit).`
+                        : openingUnitsPerPack > 0
+                          ? `Linked: 1 ${packFieldLabel(activeCategoryRules).toLowerCase()} = ${openingUnitsPerPack} ${baseFieldLabel(activeCategoryRules).toLowerCase()} (edit either side).`
+                          : `Set Units / Pack in Pricing first${data.form?.trim() ? ` — labels follow category “${data.form.trim()}”` : ''}.`}
+                    </p>
                   </div>
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-semibold text-slate-700">
-                    MRP* {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
-                  </span>
-                  <input
-                    type="number"
-                    value={data.mrp}
-                    onChange={(e) => setData({ ...data, mrp: e.target.value })}
-                    placeholder="0.00"
-                    disabled={pricingLocked}
-                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-semibold text-slate-700">Units / Pack*</span>
-                  <input
-                    type="number"
-                    value={data.units_per_pack}
-                    onChange={(e) => setData({ ...data, units_per_pack: e.target.value })}
-                    placeholder={data.mrp_input_type === 'unit' ? '1 (fixed)' : 'e.g. 10'}
-                    disabled={data.mrp_input_type === 'unit'}
-                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-semibold text-slate-700">
-                    Selling price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
-                  </span>
-                  <input
-                    type="number"
-                    value={data.selling_price}
-                    onChange={(e) => setData({ ...data, selling_price: e.target.value })}
-                    placeholder="Leave empty to use MRP"
-                    disabled={pricingLocked}
-                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-semibold text-slate-700">
-                    Cost price {data.mrp_input_type === 'pack' ? '(per pack)' : '(per unit)'}
-                  </span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={data.cost_price}
-                    onChange={(e) => setData({ ...data, cost_price: e.target.value })}
-                    placeholder="Optional — purchase rate"
-                    disabled={pricingLocked}
-                    className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
-                  />
-                </label>
-                <div className="block md:col-span-2">
-                  <span className="text-[10px] font-semibold text-slate-700">Discount % (auto)</span>
-                  <div
-                    className="mt-1 h-7 w-full max-w-xs rounded border border-slate-200 bg-slate-50 px-2 flex items-center justify-end tabular-nums text-[11px] font-semibold text-slate-800"
-                    title="((MRP − selling price) ÷ MRP) × 100 on unit rates"
-                  >
-                    {unitPricingPreview && unitPricingPreview.unitMrp > 0
-                      ? `${unitPricingPreview.discountPct != null ? unitPricingPreview.discountPct.toFixed(2) : '0.00'}%`
-                      : '—'}
-                  </div>
-                  <p className="mt-0.5 text-[9px] text-slate-400">Updates when MRP and selling price change.</p>
+                )}
+                <div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Tax</span>
                 </div>
                 <label className="block">
                   <span className="text-[10px] font-semibold text-slate-700">Tax Mode</span>
@@ -1889,7 +2329,7 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                     className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                   />
                 </label>
-                <p className="md:col-span-2 text-[10px] text-slate-500">
+                <p className="text-[10px] text-slate-500">
                   {(() => {
                     if (!unitPricingPreview || !(unitPricingPreview.unitSale > 0)) {
                       return 'Enter MRP, units/pack, and selling price to preview GST on the unit sale rate.'
@@ -1908,23 +2348,10 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
                 </p>
               </div>
             </section>
-
-            <section className="space-y-1 border-t border-slate-100 pt-1">
-              <p className="text-[10px] font-bold tracking-wide text-slate-500 uppercase">Additional Info</p>
-              <label className="block">
-                <span className="text-[10px] font-semibold text-slate-700">Composition</span>
-                <input
-                  type="text"
-                  value={data.composition}
-                  onChange={(e) => setData({ ...data, composition: e.target.value })}
-                  placeholder="Optional"
-                  className="mt-1 w-full h-7 border border-slate-300 rounded px-2 text-[11px] outline-none focus:border-blue-500"
-                />
-              </label>
-            </section>
           </div>
-          <div className="mt-1.5 border-t border-slate-100 pt-1.5 flex justify-end">
-            <button
+        </div>
+        <div className="p-2 shrink-0 border-t border-slate-100 flex justify-end bg-white">
+          <button
             type="button"
             onClick={handleAdd}
             disabled={submitting}
@@ -1936,7 +2363,6 @@ function AddMedicineModal({ onClose, onRefresh, defaultGstPercent }) {
               </>
             )}
           </button>
-          </div>
         </div>
       </div>
     </div>

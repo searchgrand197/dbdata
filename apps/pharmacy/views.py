@@ -2,8 +2,10 @@ from django.db import IntegrityError, transaction
 from decimal import Decimal
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.db.models import F
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, permissions, serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -152,6 +154,77 @@ class PharmacyInvoiceViewSet(viewsets.ModelViewSet):
             invoice_no=invoice_no,
             payment_method=payment_method,
             paid_amount=paid_amount,
+        )
+
+    @action(detail=False, methods=["get"], url_path="pending-credits")
+    def pending_credits(self, request, *args, **kwargs):
+        qs = (
+            self.get_queryset()
+            .select_related("patient")
+            .filter(payment_method="credit")
+            .exclude(status=PharmacyInvoice.Status.CANCELLED)
+            .order_by("-date", "-created_at")
+        )
+        search = (request.query_params.get("search") or "").strip()
+        patient_id = (request.query_params.get("patient_id") or "").strip()
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        if search:
+            qs = qs.filter(
+                Q(invoice_no__icontains=search)
+                | Q(patient__first_name__icontains=search)
+                | Q(patient__last_name__icontains=search)
+                | Q(patient__uhid__icontains=search)
+                | Q(patient__phone__icontains=search)
+            )
+
+        patients: dict[str, dict] = {}
+        total_pending = Decimal("0.00")
+        for inv in qs:
+            due = (inv.grand_total or Decimal("0")) - (inv.paid_amount or Decimal("0"))
+            if due <= 0:
+                continue
+            pid = str(inv.patient_id)
+            row = patients.get(pid)
+            if row is None:
+                first_name = (inv.patient.first_name or "").strip()
+                last_name = (inv.patient.last_name or "").strip()
+                row = {
+                    "patient_id": pid,
+                    "patient_name": " ".join([x for x in [first_name, last_name] if x]).strip() or "Unknown",
+                    "uhid": inv.patient.uhid or "",
+                    "phone": inv.patient.phone or "",
+                    "total_pending_amount": Decimal("0.00"),
+                    "bills": [],
+                }
+                patients[pid] = row
+            row["total_pending_amount"] += due
+            row["bills"].append(
+                {
+                    "id": str(inv.id),
+                    "invoice_no": inv.invoice_no,
+                    "date": inv.date.isoformat() if inv.date else None,
+                    "grand_total": str(inv.grand_total or Decimal("0.00")),
+                    "paid_amount": str(inv.paid_amount or Decimal("0.00")),
+                    "due_amount": str(due),
+                    "ipd_admission": str(inv.ipd_admission_id) if inv.ipd_admission_id else None,
+                    "status": inv.status,
+                }
+            )
+            total_pending += due
+
+        rows = []
+        for row in patients.values():
+            row["total_pending_amount"] = str(row["total_pending_amount"])
+            row["bill_count"] = len(row["bills"])
+            rows.append(row)
+        rows.sort(key=lambda r: Decimal(r["total_pending_amount"]), reverse=True)
+        return success_response(
+            rows,
+            meta={
+                "total_patients": len(rows),
+                "total_pending_amount": str(total_pending),
+            },
         )
 
 

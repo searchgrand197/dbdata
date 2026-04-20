@@ -91,3 +91,21 @@ class CashHandover(TimeStampedModel, UUIDPrimaryKeyModel):
     def __str__(self) -> str:
         return f"Handover from {self.from_user.username} to {self.to_user.username} ({self.status})"
 
+
+class PaymentQuickService(TimeStampedModel, UUIDPrimaryKeyModel):
+    hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="payment_quick_services")
+    label = models.CharField(max_length=120)
+    price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["hospital", "is_active", "sort_order"]),
+            models.Index(fields=["hospital", "label"]),
+        ]
+        ordering = ["sort_order", "created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.label} ({self.price})"
+

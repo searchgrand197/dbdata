@@ -47,9 +47,25 @@ class Medicine(TimeStampedModel, UUIDPrimaryKeyModel):
 
 
 class MedicineCategory(TimeStampedModel, UUIDPrimaryKeyModel):
+    class RuleType(models.TextChoices):
+        STRIP_BASED = "strip_based", "Strip-based (allow loose)"
+        LIQUID = "liquid", "Liquid (no loose)"
+        FLEXIBLE = "flexible", "Flexible (outer + retail + base)"
+        UNIT_ONLY = "unit_only", "Unit only"
+
     hospital = models.ForeignKey(Hospital, on_delete=models.PROTECT, related_name="medicine_categories")
     name = models.CharField(max_length=120)
     is_active = models.BooleanField(default=True)
+    rule_type = models.CharField(
+        max_length=20,
+        choices=RuleType.choices,
+        default=RuleType.UNIT_ONLY,
+        db_index=True,
+    )
+    allow_loose_sale = models.BooleanField(default=True)
+    base_unit_label = models.CharField(max_length=40, default="unit")
+    retail_pack_label = models.CharField(max_length=40, blank=True, default="")
+    outer_pack_label = models.CharField(max_length=40, blank=True, default="")
 
     class Meta:
         unique_together = [("hospital", "name")]

@@ -14,6 +14,7 @@ import {
 } from './pharmacyCalculations'
 import { useDebouncedValue } from './useDebouncedValue'
 import { computeBaseQtyFromPacksLoose, expiryBadgeClass, expiryMeta } from './billingUtils'
+import { resolveCategoryRules } from './categoryRulePresets'
 
 const MIN_ROWS = 5
 const TAIL_EMPTY = 1
@@ -63,22 +64,49 @@ function safeFormat(dateVal, fmtStr) {
   }
 }
 
-function formatStockAsStripsAndTablets(stock, pick) {
-  const qty = Number(stock)
-  if (!Number.isFinite(qty) || qty <= 0) return '0 tab'
-  const stripSize =
-    Number(pick?.medicine?.pack_size) ||
-    Number(pick?.medicine?.unit_conversions?.strip) ||
-    Number(pick?.medicine?.unit_conversions?.STRIP) ||
-    0
-  if (!(stripSize > 0)) {
-    return qty % 1 === 0 ? `${qty} tab` : `${qty.toFixed(2)} tab`
+function preferredPackFromConversions(conversions = {}) {
+  const c = conversions && typeof conversions === 'object' ? conversions : {}
+  const tiers = [
+    ['box', 'BOX'],
+    ['carton', 'CARTON'],
+    ['strip', 'STRIP'],
+  ]
+  for (const [low, up] of tiers) {
+    const n = Number(c[low] ?? c[up]) || 0
+    if (n > 0) {
+      const labelKey = c[low] != null && c[low] !== '' ? low : up
+      return { perPack: n, label: String(labelKey).toLowerCase() }
+    }
   }
-  const strips = Math.floor(qty / stripSize)
-  const tabs = qty - strips * stripSize
-  if (tabs <= 0) return `${strips} strip${strips === 1 ? '' : 's'}`
-  const tabText = tabs % 1 === 0 ? String(tabs) : Number(tabs.toFixed(2)).toString()
-  return `${strips} strip${strips === 1 ? '' : 's'} + ${tabText} tab`
+  return { perPack: 0, label: 'pack' }
+}
+
+function inventoryQtyLabelsForSale(medicine, categoryRows = []) {
+  const rules = resolveCategoryRules(medicine?.form, categoryRows)
+  const fromCat = String(rules.base_unit_label || '').trim()
+  const baseLabel = (fromCat || String(medicine?.unit_name || 'unit').trim() || 'unit').toLowerCase()
+  const conv = medicine?.unit_conversions || {}
+  const packPref = preferredPackFromConversions(conv)
+  const retail = String(rules.retail_pack_label || '').trim().toLowerCase()
+  const packLabel =
+    retail && ['strip', 'box', 'carton'].includes(packPref.label) ? retail : packPref.label
+  return { baseLabel, packLabel, perPack: packPref.perPack }
+}
+
+function formatStockByCategoryRules(stock, pick, categoryRows = []) {
+  const qty = Number(stock) || 0
+  const { baseLabel, packLabel, perPack } = inventoryQtyLabelsForSale(pick?.medicine, categoryRows)
+  if (qty <= 0) return `0 ${baseLabel}`
+  if (!(perPack > 1)) {
+    const n = qty % 1 === 0 ? qty : Number(qty.toFixed(2))
+    return `${n} ${baseLabel}`
+  }
+  const packs = Math.floor(qty / perPack)
+  const rem = Math.round((qty - packs * perPack) * 100) / 100
+  const parts = []
+  if (packs > 0) parts.push(`${packs} ${packLabel}${packs === 1 ? '' : 's'}`)
+  if (rem > 0) parts.push(`${rem % 1 === 0 ? rem : Number(rem.toFixed(2))} ${baseLabel}`)
+  return parts.length ? parts.join(' + ') : `0 ${baseLabel}`
 }
 
 /** Discount % between batch MRP and selling rate: ((MRP − rate) / MRP) × 100, rounded to 2 decimals. */
@@ -147,7 +175,7 @@ function rowExpiryStatus(row) {
   return expiryMeta(row.batch?.expiry_date).status
 }
 
-const SearchHitRow = memo(function SearchHitRow({ pick, disabled, onPick }) {
+const SearchHitRow = memo(function SearchHitRow({ pick, disabled, onPick, categoryRows }) {
   const st = pick.expiry_status
   const badge =
     st === 'expired' ? (
@@ -176,7 +204,7 @@ const SearchHitRow = memo(function SearchHitRow({ pick, disabled, onPick }) {
           </span>
         </div>
         <div className="mt-0.5 text-[10px] font-semibold text-emerald-800 tabular-nums">
-          Qty available (inventory): {formatStockAsStripsAndTablets(pick.batch?.stock, pick)}
+          Qty available (inventory): {formatStockByCategoryRules(pick.batch?.stock, pick, categoryRows)}
         </div>
       </div>
       <div className="shrink-0 flex flex-col items-end gap-1">
@@ -214,8 +242,8 @@ function ErpBillingViewInner({
   const [searchLoading, setSearchLoading] = useState(false)
   /** When set, this row shows product search to replace medicine/batch (same row id). */
   const [replacingRowId, setReplacingRowId] = useState(null)
-  /** Default on so printed sale bills show CGST/SGST (matches invoice model default). */
-  const [gstEnabled, setGstEnabled] = useState(true)
+  /** Default off so new sale bills start as Non-GST unless user enables GST. */
+  const [gstEnabled, setGstEnabled] = useState(false)
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(defaultInvoiceDate)
   const [invoiceTime, setInvoiceTime] = useState(defaultInvoiceTime)
@@ -226,6 +254,7 @@ function ErpBillingViewInner({
   const [linkedAdmission, setLinkedAdmission] = useState(null)
   const [activeAdmissionByPatientId, setActiveAdmissionByPatientId] = useState({})
   const [doctorProfileIdByUserId, setDoctorProfileIdByUserId] = useState({})
+  const [medicineCategoryRows, setMedicineCategoryRows] = useState([])
 
   const productRefs = useRef({})
   const packRefs = useRef({})
@@ -358,6 +387,23 @@ function ErpBillingViewInner({
       cancelled = true
     }
   }, [selectedPt?.id])
+
+  React.useEffect(() => {
+    let cancelled = false
+    api
+      .get('/medicine-categories/?limit=500')
+      .then((res) => {
+        if (cancelled) return
+        const rows = res.data?.data || res.data?.results || []
+        setMedicineCategoryRows(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setMedicineCategoryRows([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const defaultGst = parseOutletDefaultGstPercent(outletSettings?.default_gst_percent)
 
@@ -535,7 +581,15 @@ function ErpBillingViewInner({
     setReplacingRowId(null)
     setPSearch('')
     setSearchResults([])
-    setTimeout(() => packRefs.current[rowId]?.focus(), 50)
+    const pickedPackSize = Math.max(1, Number(pick?.medicine?.pack_size) || 1)
+    setActiveField(pickedPackSize > 1 ? 'loose' : 'packs')
+    setTimeout(() => {
+      if (pickedPackSize > 1 && looseRefs.current[rowId]) {
+        looseRefs.current[rowId].focus()
+        return
+      }
+      packRefs.current[rowId]?.focus()
+    }, 50)
   }, [])
 
   function handleRowEnter(e, rowId, field) {
@@ -966,6 +1020,7 @@ function ErpBillingViewInner({
                                         key={`${pick.batch.id}-${j}`}
                                         pick={pick}
                                         disabled={dis}
+                                        categoryRows={medicineCategoryRows}
                                         onPick={(p) => applySearchPick(row.id, p)}
                                       />
                                     )

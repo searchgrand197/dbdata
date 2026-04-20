@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import api from '../api'
 import toast from 'react-hot-toast'
+import { format } from 'date-fns'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -132,9 +133,11 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [dashboardTab, setDashboardTab] = useState('overview')
   const [gstEnabled, setGstEnabled] = useState(true)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [todayDate, setTodayDate] = useState(() => format(new Date(), 'yyyy-MM-dd'))
   const [refreshing, setRefreshing] = useState(false)
 
   const fetchDashboard = useCallback(async (showRefreshLoader = false) => {
@@ -147,6 +150,7 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
       else params.set('gst', '0')
       if (dateFrom) params.set('date_from', dateFrom)
       if (dateTo) params.set('date_to', dateTo)
+      if (todayDate) params.set('today_date', todayDate)
       const res = await api.get(`/pharmacy/dashboard/?${params}`)
       setData(res.data?.data || res.data)
     } catch (err) {
@@ -157,7 +161,7 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [gstEnabled, dateFrom, dateTo])
+  }, [gstEnabled, dateFrom, dateTo, todayDate])
 
   useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
@@ -166,6 +170,8 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
   const stock = data?.stock || {}
   const customers = data?.customers || {}
   const cash = data?.cash || {}
+  const todaySales = data?.today_sales || {}
+  const todayTotalForTab = data?.today_total_for_tab ?? 0
 
   const customerPieData = useMemo(() => {
     if (!customers.new && !customers.repeat) return []
@@ -202,6 +208,26 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-extrabold text-slate-900">Pharmacy Dashboard</h2>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 p-1 border border-slate-200 rounded-lg bg-white">
+            <button
+              type="button"
+              onClick={() => setDashboardTab('overview')}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold ${
+                dashboardTab === 'overview' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Overview
+            </button>
+            <button
+              type="button"
+              onClick={() => setDashboardTab('today')}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold ${
+                dashboardTab === 'today' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Today Total {rupeeFull(todayTotalForTab)}
+            </button>
+          </div>
           <button
             onClick={() => setGstEnabled(prev => !prev)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors ${
@@ -240,44 +266,119 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <SummaryCard
-          icon={IndianRupee}
-          iconBg="bg-blue-600"
-          title="Net Sales"
-          value={rupee(sales.total)}
-          badge={sales.growth != null ? pctBadge(sales.growth) : null}
-          chart={<MiniLineChart data={sales.trend} dataKey="amount" color="#3b82f6" />}
-        />
-        <SummaryCard
-          icon={Package}
-          iconBg="bg-violet-600"
-          title="Stock Value"
-          value={rupee(stock.sale_value)}
-          subtitle={`Purchase: ${rupee(stock.purchase_value)} · MRP: ${rupee(stock.mrp_value)}`}
-        />
-        <SummaryCard
-          icon={Users}
-          iconBg="bg-emerald-600"
-          title="Customers"
-          value={customers.total || 0}
-          subtitle={`New: ${customers.new || 0} · Repeat: ${customers.repeat || 0}`}
-          badge={customers.avg_order_value ? (
-            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">
-              Avg {rupee(customers.avg_order_value)}
-            </span>
-          ) : null}
-        />
-        <SummaryCard
-          icon={Wallet}
-          iconBg="bg-amber-500"
-          title="Cash-in-Hand"
-          value={rupee(cash.total)}
-          subtitle={`Cash: ${rupee(cash.cash)} · Online: ${rupee(cash.online)} · Cheque: ${rupee(cash.cheque)}`}
-        />
-      </div>
+      {dashboardTab === 'overview' ? (
+        <>
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <SummaryCard
+              icon={IndianRupee}
+              iconBg="bg-blue-600"
+              title="Net Sales"
+              value={rupee(sales.total)}
+              badge={sales.growth != null ? pctBadge(sales.growth) : null}
+              chart={<MiniLineChart data={sales.trend} dataKey="amount" color="#3b82f6" />}
+            />
+            <SummaryCard
+              icon={Package}
+              iconBg="bg-violet-600"
+              title="Stock Value"
+              value={rupee(stock.sale_value)}
+              subtitle={`Purchase: ${rupee(stock.purchase_value)} · MRP: ${rupee(stock.mrp_value)}`}
+            />
+            <SummaryCard
+              icon={Users}
+              iconBg="bg-emerald-600"
+              title="Customers"
+              value={customers.total || 0}
+              subtitle={`New: ${customers.new || 0} · Repeat: ${customers.repeat || 0}`}
+              badge={customers.avg_order_value ? (
+                <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">
+                  Avg {rupee(customers.avg_order_value)}
+                </span>
+              ) : null}
+            />
+            <SummaryCard
+              icon={Wallet}
+              iconBg="bg-amber-500"
+              title="Cash-in-Hand"
+              value={rupee(cash.total)}
+              subtitle={`Cash: ${rupee(cash.cash)} · Online: ${rupee(cash.online)} · Cheque: ${rupee(cash.cheque)}`}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Today's sale split + margin */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[11px] font-bold text-slate-700">Today Sales Breakdown</h3>
+              <div className="flex items-center gap-1.5">
+                <Calendar size={12} className="text-slate-400" />
+                <input
+                  type="date"
+                  value={todayDate}
+                  onChange={e => setTodayDate(e.target.value)}
+                  className="border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-700"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+              {[
+                { label: 'Cash', value: todaySales.cash, margin: todaySales.cash_margin, color: 'text-emerald-700', bg: 'bg-emerald-50' },
+                { label: 'UPI', value: todaySales.upi, margin: todaySales.upi_margin, color: 'text-blue-700', bg: 'bg-blue-50' },
+                { label: 'Other', value: todaySales.other, margin: todaySales.other_margin, color: 'text-violet-700', bg: 'bg-violet-50' },
+                { label: 'Credit', value: todaySales.credit, margin: todaySales.credit_margin, color: 'text-amber-700', bg: 'bg-amber-50' },
+                { label: 'Total', value: todaySales.total, margin: todaySales.total_margin, color: 'text-slate-900', bg: 'bg-slate-100' },
+              ].map((item) => (
+                <div key={item.label} className={`${item.bg} rounded-lg p-3 text-center`}>
+                  <p className="text-[10px] font-semibold text-slate-500">{item.label}</p>
+                  <p className={`text-base font-extrabold ${item.color} mt-1`}>{rupeeFull(item.value)}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Margin {rupeeFull(item.margin)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
 
+          <div className="bg-white rounded-xl border border-slate-200 p-4">
+            <h3 className="text-[11px] font-bold text-slate-700 mb-3">Today Bill Details</h3>
+            {!todaySales.details?.length ? (
+              <EmptyState message="No bills found for today" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[11px]">
+                  <thead className="bg-slate-100 text-[10px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Invoice</th>
+                      <th className="px-3 py-2">Patient</th>
+                      <th className="px-3 py-2">Method</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="px-3 py-2 text-right">Margin</th>
+                      <th className="px-3 py-2 text-right">Paid</th>
+                      <th className="px-3 py-2 text-right">Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {todaySales.details.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 font-mono text-blue-700">#{r.invoice_no}</td>
+                        <td className="px-3 py-2 text-slate-700">{r.patient_name || '—'}</td>
+                        <td className="px-3 py-2 uppercase font-semibold text-slate-600">{r.payment_method || 'other'}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{rupeeFull(r.grand_total)}</td>
+                        <td className="px-3 py-2 text-right text-emerald-700 font-semibold">{rupeeFull(r.margin)}</td>
+                        <td className="px-3 py-2 text-right">{rupeeFull(r.paid_amount)}</td>
+                        <td className="px-3 py-2 text-right text-amber-700 font-semibold">{rupeeFull(r.due_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {dashboardTab === 'overview' ? (
+        <>
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Sales Trend */}
@@ -393,6 +494,8 @@ const PharmacyDashboard = React.memo(function PharmacyDashboard() {
           ))}
         </div>
       </div>
+        </>
+      ) : null}
     </div>
   )
 })

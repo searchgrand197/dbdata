@@ -22,6 +22,7 @@ class PharmacyOutletSettingsSerializer(serializers.ModelSerializer):
             "email",
             "website",
             "default_gst_percent",
+            "default_sale_discount_percent",
             "created_at",
             "updated_at",
         )
@@ -29,15 +30,42 @@ class PharmacyOutletSettingsSerializer(serializers.ModelSerializer):
 
 class PharmacyInvoiceItemSerializer(serializers.ModelSerializer):
     medicine_name = serializers.ReadOnlyField(source="medicine.name")
-    batch_no = serializers.ReadOnlyField(source="batch.batch_no")
-    expiry_date = serializers.ReadOnlyField(source="batch.expiry_date")
-    
+    batch_no = serializers.SerializerMethodField()
+    expiry_date = serializers.SerializerMethodField()
+
     class Meta:
         model = PharmacyInvoiceItem
         fields = (
-            "id", "invoice", "medicine", "medicine_name", "batch", "batch_no", "expiry_date", 
-            "qty", "mrp", "rate", "cgst_rate", "sgst_rate", "amount"
+            "id",
+            "invoice",
+            "medicine",
+            "medicine_name",
+            "batch",
+            "batch_no",
+            "expiry_date",
+            "snapshot_batch_no",
+            "snapshot_expiry_date",
+            "qty",
+            "mrp",
+            "rate",
+            "cgst_rate",
+            "sgst_rate",
+            "amount",
         )
+        extra_kwargs = {"batch": {"allow_null": True}}
+        read_only_fields = ("snapshot_batch_no", "snapshot_expiry_date")
+
+    def get_batch_no(self, obj):
+        b = obj.batch
+        if b is not None:
+            return b.batch_no
+        return obj.snapshot_batch_no or ""
+
+    def get_expiry_date(self, obj):
+        b = obj.batch
+        if b is not None and b.expiry_date:
+            return b.expiry_date
+        return obj.snapshot_expiry_date
 
     def validate(self, attrs):
         request = self.context.get("request")

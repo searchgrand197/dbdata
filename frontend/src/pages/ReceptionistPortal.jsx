@@ -15,6 +15,87 @@ import { getRoomsConfig, saveRoomsConfig, getTvGroupsConfig, saveTvGroupsConfig 
 import BedSelector from '../components/BedSelector'
 import OpdGeneratorTab from '../components/OpdTemplateEditor/OpdGeneratorTab'
 
+const PAYMENT_SLIP_PROFILE_KEY = 'reception.payment_slip_profile.v1'
+const DEFAULT_PAYMENT_SLIP_PROFILE = {
+  hospital_name: 'Vardraan Hospital',
+  address: 'Jind, Haryana, 126102',
+  pin_code: '126102',
+  phone: '+91-XXXXXXXXXX',
+  email: 'info@vardraanhospital.com',
+  website: '',
+}
+
+const RECEPTION_OPD_SETTINGS_KEY = 'reception.opd_settings.v1'
+const DEFAULT_RECEPTION_OPD_SETTINGS = {
+  default_city: 'Jind',
+  default_state: 'Haryana',
+  default_doctor_user: '',
+}
+
+function getReceptionOpdSettings() {
+  try {
+    const raw = localStorage.getItem(RECEPTION_OPD_SETTINGS_KEY)
+    if (!raw) return { ...DEFAULT_RECEPTION_OPD_SETTINGS }
+    const parsed = JSON.parse(raw)
+    return {
+      ...DEFAULT_RECEPTION_OPD_SETTINGS,
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+    }
+  } catch {
+    return { ...DEFAULT_RECEPTION_OPD_SETTINGS }
+  }
+}
+
+function saveReceptionOpdSettings(settings) {
+  try {
+    localStorage.setItem(RECEPTION_OPD_SETTINGS_KEY, JSON.stringify({
+      default_city: settings.default_city || '',
+      default_state: settings.default_state || '',
+      default_doctor_user: settings.default_doctor_user || '',
+    }))
+  } catch {
+    // best effort persistence
+  }
+}
+
+function getPaymentSlipProfile() {
+  try {
+    const raw = localStorage.getItem(PAYMENT_SLIP_PROFILE_KEY)
+    if (!raw) return { ...DEFAULT_PAYMENT_SLIP_PROFILE }
+    const parsed = JSON.parse(raw)
+    return {
+      ...DEFAULT_PAYMENT_SLIP_PROFILE,
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+    }
+  } catch {
+    return { ...DEFAULT_PAYMENT_SLIP_PROFILE }
+  }
+}
+
+function savePaymentSlipProfile(profile) {
+  try {
+    localStorage.setItem(PAYMENT_SLIP_PROFILE_KEY, JSON.stringify({
+      hospital_name: profile.hospital_name || '',
+      address: profile.address || '',
+      pin_code: profile.pin_code || '',
+      phone: profile.phone || '',
+      email: profile.email || '',
+      website: profile.website || '',
+    }))
+  } catch {
+    // best effort persistence
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 // ─── Sidebar Nav Config ───────────────────────────────────────────────────────
 const NAV_GROUPS = [
   {
@@ -22,7 +103,6 @@ const NAV_GROUPS = [
     items: [
       { id: 'opd', label: 'Token Queue', icon: Users },
       { id: 'opd_history', label: 'OPD Slips', icon: FileText },
-      { id: 'opd_template', label: 'OPD Template', icon: Printer },
     ],
   },
   {
@@ -56,7 +136,9 @@ const NAV_GROUPS = [
   },
   {
     label: 'Setup',
-    items: [{ id: 'tv', label: 'TV Screens', icon: Monitor }],
+    items: [
+      { id: 'settings', label: 'Settings', icon: Tag },
+    ],
   },
   {
     label: 'Staff',
@@ -337,6 +419,10 @@ function PrintSlip({ visit, onClose }) {
 
 // ─── OPD Section ──────────────────────────────────────────────────────────────
 function OPDSection({ rooms }) {
+  const opdSettings = getReceptionOpdSettings()
+  const defaultCity = opdSettings.default_city || ''
+  const defaultState = opdSettings.default_state || ''
+  const defaultDoctorUser = opdSettings.default_doctor_user || ''
   const [visits, setVisits] = useState([])
   const [doctors, setDoctors] = useState([])
   const [queueSearch, setQueueSearch] = useState('')
@@ -364,9 +450,9 @@ function OPDSection({ rooms }) {
     age: '',
     guardian_name: '',
     address_line1: '',
-    city: 'Jind',
-    state: 'Haryana',
-    doctor: '',
+    city: defaultCity,
+    state: defaultState,
+    doctor: defaultDoctorUser,
     amount: '',
     payment_mode: 'cash',
     chief_complaint: '',
@@ -401,6 +487,10 @@ function OPDSection({ rooms }) {
     const prefix = roomRow?.prefix || ''
     return `${prefix}${tokenStr}`
   }
+  const capitalizePersonName = (value) => String(value || '')
+    .split(' ')
+    .map((part) => (part ? `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}` : ''))
+    .join(' ')
 
   function startAddAnotherPersonSamePhone() {
     const ten = form.phone.replace(/\D/g, '').slice(-10)
@@ -418,8 +508,8 @@ function OPDSection({ rooms }) {
       gender: 'male',
       age: '',
       address_line1: '',
-      city: 'Jind',
-      state: 'Haryana',
+      city: defaultCity,
+      state: defaultState,
     }))
   }
 
@@ -543,8 +633,8 @@ function OPDSection({ rooms }) {
         gender: 'male',
         age: '',
         address_line1: '',
-        city: 'Jind',
-        state: 'Haryana',
+        city: defaultCity,
+        state: defaultState,
       }))
       return
     }
@@ -590,21 +680,21 @@ function OPDSection({ rooms }) {
             if (p) {
               setForm(f => ({
                 ...f,
-                patient_name: [p.first_name, p.last_name].filter(Boolean).join(' ') || '',
+                patient_name: capitalizePersonName([p.first_name, p.last_name].filter(Boolean).join(' ') || ''),
                 gender: p.gender || 'male',
                 age: p.age != null && p.age !== '' ? String(p.age) : '',
                 address_line1: p.address_line1 || '',
                 city: p.city || '',
                 state: p.state || '',
-                guardian_name: p.guardian_name || '',
+                guardian_name: capitalizePersonName(p.guardian_name || ''),
               }))
             }
           } catch {
             setForm(f => ({
               ...f,
-              patient_name: [pt.first_name, pt.last_name].filter(Boolean).join(' ') || '',
+              patient_name: capitalizePersonName([pt.first_name, pt.last_name].filter(Boolean).join(' ') || ''),
               gender: pt.gender || 'male',
-              guardian_name: pt.guardian_name || '',
+              guardian_name: capitalizePersonName(pt.guardian_name || ''),
             }))
           }
         }
@@ -698,7 +788,9 @@ function OPDSection({ rooms }) {
           setSubmitting(false)
           return
         }
-        const nameParts = (form.patient_name || '').trim().split(' ');
+        const normalizedPatientName = capitalizePersonName(form.patient_name).trim()
+        const normalizedGuardianName = capitalizePersonName(form.guardian_name).trim()
+        const nameParts = normalizedPatientName.split(' ');
         const fName = nameParts[0] || 'Patient';
         const lName = nameParts.slice(1).join(' ') || '';
         const patRes = await api.post('/patients/', {
@@ -712,7 +804,7 @@ function OPDSection({ rooms }) {
           ...(form.address_line1 ? { address_line1: form.address_line1 } : {}),
           ...(form.city        ? { city: form.city }            : {}),
           ...(form.state       ? { state: form.state }          : {}),
-          guardian_name: form.guardian_name || '',
+          guardian_name: normalizedGuardianName,
         })
         patientId = (patRes.data?.data || patRes.data)?.id
       } else {
@@ -723,9 +815,9 @@ function OPDSection({ rooms }) {
           address_line1: form.address_line1 || '',
           city: form.city || '',
           state: form.state || '',
-          guardian_name: form.guardian_name || '',
+          guardian_name: capitalizePersonName(form.guardian_name).trim(),
         }
-        const trimmedName = (form.patient_name || '').trim()
+        const trimmedName = capitalizePersonName(form.patient_name).trim()
         if (trimmedName && trimmedName !== 'Patient') {
           const nameParts = trimmedName.split(' ')
           patch.first_name = nameParts[0]
@@ -755,8 +847,8 @@ function OPDSection({ rooms }) {
       const selectedDoc = doctors.find(d => d.user === form.doctor || d.id === form.doctor)
       const selectedRoom = getRoomForDoctorUser(form.doctor)
       // Use form.patient_name if filled; otherwise fall back to the matched patient's name
-      const ptName = (form.patient_name || '').trim() ||
-        [matchedPatient?.first_name, matchedPatient?.last_name].filter(Boolean).join(' ') ||
+      const ptName = capitalizePersonName((form.patient_name || '').trim()) ||
+        capitalizePersonName([matchedPatient?.first_name, matchedPatient?.last_name].filter(Boolean).join(' ')) ||
         'Patient'
       const tokenNum = payload?.token_number || payload?.queue_number || ''
       const displayToken = buildDisplayToken({ ...payload, doctor_user: form.doctor, token_number: tokenNum }, selectedRoom)
@@ -767,7 +859,7 @@ function OPDSection({ rooms }) {
         let printPhone = payload?.patient_phone || matchedPatient?.phone || '';
         let printCity = payload?.patient_city || form.city || '';
         let printState = payload?.patient_state || form.state || '';
-        let printGuardian = payload?.patient_guardian_name || form.guardian_name || '';
+        let printGuardian = capitalizePersonName(payload?.patient_guardian_name || form.guardian_name || '');
 
         const genderAbbr = form.gender === 'female' ? 'F' : form.gender === 'male' ? 'M' : 'O'
         const ageSex = [genderAbbr, form.age].filter(Boolean).join(' ')
@@ -806,7 +898,7 @@ function OPDSection({ rooms }) {
           patient_uhid: payload?.patient_uhid || matchedPatient?.uhid || '',
           patient_city: payload?.patient_city || form.city || '',
           patient_state: payload?.patient_state || form.state || '',
-          patient_guardian_name: payload?.patient_guardian_name || form.guardian_name || '',
+          patient_guardian_name: capitalizePersonName(payload?.patient_guardian_name || form.guardian_name || ''),
           room: selectedRoom || undefined,
           display_token: displayToken,
           token_number: tokenNum,
@@ -898,22 +990,22 @@ function OPDSection({ rooms }) {
         const fullName = [p.first_name, p.last_name].filter(Boolean).join(' ')
         setForm(f => ({
           ...f,
-          patient_name: fullName || f.patient_name,
+          patient_name: capitalizePersonName(fullName || f.patient_name),
           gender: p.gender || 'male',
           age: p.age != null && p.age !== '' ? String(p.age) : '',
           address_line1: p.address_line1 || '',
           city: p.city || '',
           state: p.state || '',
-          guardian_name: p.guardian_name || '',
+          guardian_name: capitalizePersonName(p.guardian_name || ''),
         }))
       }
     } catch {
       const fullName = [pt.first_name, pt.last_name].filter(Boolean).join(' ')
       setForm(f => ({
         ...f,
-        patient_name: fullName || f.patient_name,
+        patient_name: capitalizePersonName(fullName || f.patient_name),
         gender: pt.gender || 'male',
-        guardian_name: pt.guardian_name || '',
+        guardian_name: capitalizePersonName(pt.guardian_name || ''),
       }))
     }
   }
@@ -1055,11 +1147,11 @@ function OPDSection({ rooms }) {
 
           <div className="col-span-3">
             <label className={lblFilled}>Patient Name</label>
-            <input value={form.patient_name} onChange={e => setForm(f => ({ ...f, patient_name: e.target.value }))} placeholder="Full Name" className={inpFilled} />
+            <input value={form.patient_name} onChange={e => setForm(f => ({ ...f, patient_name: capitalizePersonName(e.target.value) }))} placeholder="Full Name" className={inpFilled} />
           </div>
           <div className="col-span-3">
             <label className={lblFilled}>Guardian / Relative Name</label>
-            <input value={form.guardian_name} onChange={e => setForm(f => ({ ...f, guardian_name: e.target.value }))} placeholder="Guardian name" className={inpFilled} />
+            <input value={form.guardian_name} onChange={e => setForm(f => ({ ...f, guardian_name: capitalizePersonName(e.target.value) }))} placeholder="Guardian name" className={inpFilled} />
           </div>
           <div className="col-span-3">
             <label className={lblFilled}>Age</label>
@@ -1180,7 +1272,7 @@ function OPDSection({ rooms }) {
             <label className={lbl}>Doctor</label>
             <select value={form.doctor} onChange={e => {
               const selectedDocId = e.target.value
-              const selectedDoc = doctors.find(d => (d.user || d.id) === selectedDocId)
+              const selectedDoc = doctors.find(d => normalizeId(d.user || d.id) === normalizeId(selectedDocId))
               const fee = selectedDoc?.consultation_fee
               setForm(f => ({
                 ...f,
@@ -1331,9 +1423,12 @@ function OPDSection({ rooms }) {
                   </div>
                   <div className="col-span-4 pl-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">
-                      {v.patient_name || 'Patient'}
+                      {capitalizePersonName(v.patient_name || 'Patient')}
                       {v.patient_uhid && <span className="ml-1 text-[11px] font-mono text-gray-400">({v.patient_uhid})</span>}
                     </p>
+                    {v.patient_guardian_name && (
+                      <p className="text-[10px] text-gray-500 truncate">G: {capitalizePersonName(v.patient_guardian_name)}</p>
+                    )}
                     {v.created_by_name && <p className="text-[10px] text-gray-400 font-bold">By: {v.created_by_name}</p>}
                   </div>
                   <div className="col-span-3 min-w-0">
@@ -2129,7 +2224,7 @@ function printIpdAdmitSlip({
 }
 
 // ─── IPD Admissions ───────────────────────────────────────────────────────────
-function IPDSection({ mode }) {
+function IPDSection({ mode, initialAdmissionDraft }) {
   const [admissions, setAdmissions] = useState([])
   const [patients, setPatients] = useState([])
   const [doctors, setDoctors] = useState([])
@@ -2164,6 +2259,14 @@ function IPDSection({ mode }) {
   const [showPayments, setShowPayments] = useState(null) // admission object
   const [showAddCharge, setShowAddCharge] = useState(null) // admission object
   const [autoPrintAdmitSlip, setAutoPrintAdmitSlip] = useState(false)
+  const lastAppliedDraftRef = useRef('')
+  const splitName = (fullName) => {
+    const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean)
+    return {
+      first_name: parts[0] || '',
+      last_name: parts.slice(1).join(' ') || '',
+    }
+  }
 
   useEffect(() => {
     fetchAdmissions()
@@ -2172,6 +2275,46 @@ function IPDSection({ mode }) {
     fetchDepartments()
     fetchBedPrices()
   }, [mode])
+
+  useEffect(() => {
+    if (mode !== 'new_admission') return
+    const draft = initialAdmissionDraft
+    if (!draft?.id) return
+    const draftKey = String(draft.id)
+    if (lastAppliedDraftRef.current === draftKey) return
+
+    const nameParts = splitName(draft.patient_name)
+    const instantPatient = {
+      id: draft.patient_id || '',
+      uhid: draft.patient_uhid || '',
+      phone: draft.patient_phone || '',
+      first_name: nameParts.first_name,
+      last_name: nameParts.last_name,
+    }
+
+    // Instant prefill: do not wait for full patient list API.
+    setSelectedPatient(instantPatient)
+    setIsAddingNew(false)
+    setPtSearch('')
+    setPtResults([])
+    setForm((prev) => ({
+      ...prev,
+      patient: draft.patient_id || prev.patient || '',
+      assigned_doctor: draft.doctor_user || prev.assigned_doctor || '',
+      admission_date: format(new Date(), 'yyyy-MM-dd'),
+      admission_diagnosis: draft.visit_reason || prev.admission_diagnosis || '',
+      admission_notes: draft.notes || prev.admission_notes || '',
+    }))
+    lastAppliedDraftRef.current = draftKey
+
+    // Optional enrichment in background (when patient list arrives).
+    const matchedPatient = patients.find((p) => String(p.id) === String(draft.patient_id))
+      || patients.find((p) => String(p.uhid || '').toLowerCase() === String(draft.patient_uhid || '').toLowerCase())
+    if (matchedPatient) {
+      setSelectedPatient(matchedPatient)
+      setForm((prev) => ({ ...prev, patient: matchedPatient.id }))
+    }
+  }, [mode, initialAdmissionDraft, patients])
 
   async function fetchAdmissions() {
     setLoading(true)
@@ -4414,20 +4557,48 @@ function PaymentSlipSection() {
   const [activeIpdByPatient, setActiveIpdByPatient] = useState({})
 
   useEffect(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(QUICK_SERVICES_STORAGE_KEY) || '[]')
-      if (Array.isArray(raw) && raw.length > 0) {
-        const normalized = raw
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data } = await api.get('/payments/quick-services/')
+        const rows = Array.isArray(data?.data) ? data.data : []
+        const normalized = rows
           .map(s => ({ label: String(s?.label || '').trim(), price: Number(s?.price || 0) }))
           .filter(s => s.label && Number.isFinite(s.price) && s.price >= 0)
-        if (normalized.length > 0) setQuickServices(normalized)
+        if (!cancelled && normalized.length > 0) {
+          setQuickServices(normalized)
+          return
+        }
+      } catch {
+        // fallback below
       }
-    } catch {}
+      try {
+        const raw = JSON.parse(localStorage.getItem(QUICK_SERVICES_STORAGE_KEY) || '[]')
+        if (Array.isArray(raw) && raw.length > 0) {
+          const normalized = raw
+            .map(s => ({ label: String(s?.label || '').trim(), price: Number(s?.price || 0) }))
+            .filter(s => s.label && Number.isFinite(s.price) && s.price >= 0)
+          if (!cancelled && normalized.length > 0) setQuickServices(normalized)
+        }
+      } catch {}
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  useEffect(() => {
-    localStorage.setItem(QUICK_SERVICES_STORAGE_KEY, JSON.stringify(quickServices))
-  }, [quickServices])
+  async function persistQuickServices(nextList) {
+    const payload = (nextList || [])
+      .map(s => ({ label: String(s?.label || '').trim(), price: Number(s?.price || 0) }))
+      .filter(s => s.label && Number.isFinite(s.price) && s.price >= 0)
+    setQuickServices(payload)
+    localStorage.setItem(QUICK_SERVICES_STORAGE_KEY, JSON.stringify(payload))
+    try {
+      await api.put('/payments/quick-services/', { services: payload })
+    } catch {
+      toast.error('Could not sync quick services to server')
+    }
+  }
 
   useEffect(() => {
     if (ptSearch.trim().length < 2) { setPtResults([]); return }
@@ -4481,15 +4652,13 @@ function PaymentSlipSection() {
   }
 
   function moveQuickService(index, direction) {
-    setQuickServices(prev => {
-      const to = index + direction
-      if (to < 0 || to >= prev.length) return prev
-      const copy = [...prev]
-      const tmp = copy[index]
-      copy[index] = copy[to]
-      copy[to] = tmp
-      return copy
-    })
+    const to = index + direction
+    if (to < 0 || to >= quickServices.length) return
+    const copy = [...quickServices]
+    const tmp = copy[index]
+    copy[index] = copy[to]
+    copy[to] = tmp
+    void persistQuickServices(copy)
   }
 
   function addQuickService() {
@@ -4497,13 +4666,13 @@ function PaymentSlipSection() {
     const price = parseFloat(newQuickPrice)
     if (!label) { toast.error('Service label is required'); return }
     if (Number.isNaN(price) || price < 0) { toast.error('Enter valid price'); return }
-    setQuickServices(prev => [...prev, { label, price }])
+    void persistQuickServices([...quickServices, { label, price }])
     setNewQuickLabel('')
     setNewQuickPrice('')
   }
 
   function removeQuickService(index) {
-    setQuickServices(prev => prev.filter((_, i) => i !== index))
+    void persistQuickServices(quickServices.filter((_, i) => i !== index))
   }
 
   const subtotal = items.reduce((sum, it) => {
@@ -5626,7 +5795,7 @@ function Sidebar({ activeSection, onSelect }) {
 }
 
 // ─── OPD Slips / History ────────────────────────────────────────────────────────
-function OpdSlipsSection() {
+function OpdSlipsSection({ onMoveToIpd }) {
   const [visits, setVisits] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -5634,6 +5803,7 @@ function OpdSlipsSection() {
   const [page, setPage] = useState(0)
   const [editingVisit, setEditingVisit] = useState(null)
   const [viewVisit, setViewVisit] = useState(null)
+  const [printVisit, setPrintVisit] = useState(null)
   const [doctors, setDoctors] = useState([])
   const PAGE_SIZE = 10
   const debounceRef = useRef(null)
@@ -5682,6 +5852,31 @@ function OpdSlipsSection() {
     }
   }
 
+  function reprintOpdSlip(visit) {
+    if (!visit) return
+    setPrintVisit({
+      ...visit,
+      doc_name: visit.doc_name || visit.doctor_name || '',
+      chief_complaint: visit.chief_complaint || visit.visit_reason || '',
+      display_token: visit.display_token || String(visit.queue_number || visit.token_number || ''),
+    })
+  }
+
+  function moveVisitToIpd(visit) {
+    if (!visit) return
+    if (typeof onMoveToIpd === 'function') {
+      onMoveToIpd({
+        id: visit.id,
+        patient_id: visit.patient,
+        patient_uhid: visit.patient_uhid || '',
+        patient_name: visit.patient_name || '',
+        doctor_user: visit.doctor_user || '',
+        visit_reason: visit.visit_reason || '',
+        notes: `Shifted from OPD slip #${visit.queue_number || visit.token_number || '--'}`,
+      })
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const statusColors = { waiting: 'bg-amber-100 text-amber-800', in_progress: 'bg-blue-100 text-blue-800', completed: 'bg-emerald-100 text-emerald-800', cancelled: 'bg-red-100 text-red-800' }
 
@@ -5711,9 +5906,9 @@ function OpdSlipsSection() {
           <div className="col-span-2">Date/OPD No</div>
           <div className="col-span-2">Patient</div>
           <div className="col-span-2">Doctor</div>
-          <div className="col-span-2">Complaint</div>
+          <div className="col-span-1">Complaint</div>
           <div className="col-span-2 text-center">Status / Amt</div>
-          <div className="col-span-2 text-right">Action</div>
+          <div className="col-span-3 text-right">Action</div>
         </div>
 
         <div className="divide-y divide-gray-50 flex-1">
@@ -5731,7 +5926,7 @@ function OpdSlipsSection() {
                 <div className="col-span-2 min-w-0 pr-2">
                   <span className="text-gray-600 truncate block">{v.doctor_name || '-'}</span>
                 </div>
-                <div className="col-span-2 min-w-0 pr-2 text-gray-500 text-xs line-clamp-2">
+                <div className="col-span-1 min-w-0 pr-2 text-gray-500 text-xs line-clamp-2">
                   {v.visit_reason || '-'}
                 </div>
                 <div className="col-span-2 flex flex-col items-center gap-1">
@@ -5740,11 +5935,17 @@ function OpdSlipsSection() {
                   </span>
                   {v.amount && <span className="text-xs font-bold text-gray-600 border border-gray-200 px-1.5 rounded bg-gray-50 flex items-center"><IndianRupee size={10} className="mr-0.5"/> {v.amount} <span className="ml-1 text-[9px] uppercase">({v.payment_mode || 'CASH'})</span></span>}
                 </div>
-                <div className="col-span-2 flex flex-row gap-2 items-center justify-end">
-                  <button onClick={() => setViewVisit(v)} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group">
+                <div className="col-span-3 flex flex-wrap gap-1.5 items-center justify-end">
+                  <button onClick={() => setViewVisit(v)} className="h-8 min-w-[62px] flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
                     <Eye size={12} className="group-hover:scale-110 transition-transform" /> View
                   </button>
-                  <button onClick={() => setEditingVisit(v)} className="flex-1 flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group">
+                  <button onClick={() => moveVisitToIpd(v)} className="h-8 min-w-[58px] flex items-center justify-center gap-1 text-[9px] font-black text-blue-600 hover:text-white bg-blue-50 hover:bg-blue-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-blue-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
+                    <Bed size={12} className="group-hover:scale-110 transition-transform" /> IPD
+                  </button>
+                  <button onClick={() => reprintOpdSlip(v)} className="h-8 min-w-[66px] flex items-center justify-center gap-1 text-[9px] font-black text-sky-600 hover:text-white bg-sky-50 hover:bg-sky-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-sky-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
+                    <Printer size={12} className="group-hover:scale-110 transition-transform" /> Print
+                  </button>
+                  <button onClick={() => setEditingVisit(v)} className="h-8 min-w-[60px] flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
                     <Edit2 size={12} className="group-hover:scale-110 transition-transform" /> Edit
                   </button>
                 </div>
@@ -5965,6 +6166,14 @@ function OpdSlipsSection() {
                 className="flex-1 py-3 px-4 rounded-xl font-black text-xs text-gray-500 hover:bg-white hover:text-gray-800 hover:shadow-md transition-all flex items-center justify-center gap-2 uppercase tracking-[0.2em] border border-transparent hover:border-gray-200 active:scale-95 group">
                 <X size={16} className="group-hover:rotate-90 transition-transform duration-300" /> Close
               </button>
+              <button onClick={() => reprintOpdSlip(viewVisit)}
+                className="flex-1 py-3 px-4 bg-indigo-600 text-white rounded-xl font-black text-xs hover:bg-indigo-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
+                <Printer size={16} className="group-hover:scale-110 transition-transform" /> Print Slip
+              </button>
+              <button onClick={() => moveVisitToIpd(viewVisit)}
+                className="flex-1 py-3 px-4 bg-blue-600 text-white rounded-xl font-black text-xs hover:bg-blue-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
+                <Bed size={16} className="group-hover:scale-110 transition-transform" /> Move To IPD
+              </button>
               <button onClick={() => { setEditingVisit(viewVisit); setViewVisit(null); }} 
                 className="flex-[1.5] py-3 px-4 bg-emerald-600 text-white rounded-xl font-black text-xs hover:bg-emerald-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
                 <Edit2 size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" /> Edit Visit Details
@@ -5973,6 +6182,8 @@ function OpdSlipsSection() {
           </div>
         </div>
       )}
+
+      {printVisit && <PrintSlip visit={printVisit} onClose={() => setPrintVisit(null)} />}
     </div>
   )
 }
@@ -6059,7 +6270,39 @@ function PaymentSlipsListSection() {
             : (payment.payment_mode || 'Payment').toUpperCase()
     const amountNum = Number(payment.amount || 0)
     const amountFixed = Number.isFinite(amountNum) ? amountNum.toFixed(2) : '0.00'
-    const description = payment.transaction_reference || payment.receipt_no || 'Payment'
+    const slipProfile = getPaymentSlipProfile()
+    const hospitalName = escapeHtml(slipProfile.hospital_name || DEFAULT_PAYMENT_SLIP_PROFILE.hospital_name)
+    const address = escapeHtml(slipProfile.address || '')
+    const pinCode = escapeHtml(slipProfile.pin_code || '')
+    const phone = escapeHtml(slipProfile.phone || '')
+    const email = escapeHtml(slipProfile.email || '')
+    const website = escapeHtml(slipProfile.website || '')
+    const profileLines = [
+      address ? `${address}<br/>` : '',
+      pinCode ? `Pin Code: ${pinCode}<br/>` : '',
+      phone ? `Phone: ${phone}<br/>` : '',
+      email ? `Email: ${email}<br/>` : '',
+      website ? `Website: ${website}` : '',
+    ].filter(Boolean).join('')
+    const invoiceDetails = payment.invoice_details || null
+    const lineItems = Array.isArray(invoiceDetails?.items) ? invoiceDetails.items : []
+    const rows = lineItems.length
+      ? lineItems.map((it, i) => {
+          const lineTotal = Number(it?.line_total || 0)
+          return `<tr>
+              <td class="c">${i + 1}</td>
+              <td class="l">${it?.description || 'Service'}</td>
+              <td class="r">₹${lineTotal.toFixed(2)}</td>
+            </tr>`
+        }).join('')
+      : `<tr>
+            <td class="c">1</td>
+            <td class="l">${payment.transaction_reference || payment.receipt_no || 'Payment'}</td>
+            <td class="r">₹${amountFixed}</td>
+          </tr>`
+    const subtotalFixed = Number(invoiceDetails?.subtotal_amount ?? payment.amount ?? 0).toFixed(2)
+    const discountFixed = Number(invoiceDetails?.discount_amount ?? 0).toFixed(2)
+    const totalFixed = Number(invoiceDetails?.total_amount ?? payment.amount ?? 0).toFixed(2)
 
     w.document.write(`<!DOCTYPE html><html><head>
       <meta charset="utf-8"/>
@@ -6170,14 +6413,11 @@ function PaymentSlipsListSection() {
       <div class="slip">
         <div class="top">
           <div>
-            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-name">${hospitalName}</div>
             <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
           </div>
           <div class="address">
-            <strong>Jind, Haryana</strong><br/>
-            Pincode: 126102<br/>
-            Phone: +91-XXXXXXXXXX<br/>
-            Email: info@vardraanhospital.com
+            ${profileLines || 'Phone: --'}
           </div>
         </div>
 
@@ -6218,19 +6458,13 @@ function PaymentSlipsListSection() {
               <th class="r">Amount</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td class="c">1</td>
-              <td class="l">${description}</td>
-              <td class="r">₹${amountFixed}</td>
-            </tr>
-          </tbody>
+          <tbody>${rows}</tbody>
         </table>
 
         <div class="totals">
-          <div class="t-row"><span>Total Amount:</span><span>₹${amountFixed}</span></div>
-          <div class="t-row disc"><span>Discount:</span><span>₹0.00</span></div>
-          <div class="t-row.final"><span>Net Amount:</span><span>₹${amountFixed}</span></div>
+          <div class="t-row"><span>Total Amount:</span><span>₹${subtotalFixed}</span></div>
+          <div class="t-row disc"><span>Discount:</span><span>₹${discountFixed}</span></div>
+          <div class="t-row.final"><span>Net Amount:</span><span>₹${totalFixed}</span></div>
         </div>
 
         <div class="footer">
@@ -6400,7 +6634,7 @@ function PaymentSlipsListSection() {
 
       {viewPayment && (
         <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh]">
             <div className="bg-gray-800 px-5 py-4 flex items-center justify-between text-white">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center font-black text-lg shadow-inner">
@@ -6416,45 +6650,76 @@ function PaymentSlipsListSection() {
               </button>
             </div>
 
-            <div className="p-6 grid grid-cols-2 gap-6">
-              <div className="space-y-3">
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Invoice No</p>
-                  <p className="text-sm font-bold text-gray-800">{viewPayment.invoice_no || '--'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Receipt No</p>
-                  <p className="text-sm font-bold text-gray-800">{viewPayment.receipt_no || '--'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Collected By</p>
-                  <p className="text-sm font-bold text-gray-800">{viewPayment.collected_by_name || '--'}</p>
-                </div>
+            <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 md:col-span-2">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Invoice No</p>
+                <p className="text-xs font-bold text-gray-800 break-all">{viewPayment.invoice_no || '--'}</p>
               </div>
+              <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 md:col-span-2">
+                <p className="text-[9px] font-black text-emerald-600/70 uppercase tracking-widest mb-0.5">Amount</p>
+                <p className="text-lg font-black text-emerald-700">₹{Number(viewPayment.amount || 0).toLocaleString('en-IN')}</p>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Receipt No</p>
+                <p className="text-xs font-bold text-gray-800">{viewPayment.receipt_no || '--'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Payment Mode</p>
+                <p className="text-xs font-bold text-gray-800 uppercase">{viewPayment.payment_mode || '--'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Status</p>
+                <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${statusColors[viewPayment.status] || 'bg-gray-100 text-gray-800'}`}>
+                  {viewPayment.status || '--'}
+                </span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Collected By</p>
+                <p className="text-xs font-bold text-gray-800 truncate">{viewPayment.collected_by_name || '--'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 md:col-span-2">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Paid At</p>
+                <p className="text-xs font-bold text-gray-800">{viewPayment.paid_at ? format(new Date(viewPayment.paid_at), 'd/M/yyyy (HH:mm)') : '--'}</p>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 md:col-span-2">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Transaction Reference</p>
+                <p className="text-xs font-bold text-gray-800 break-all">{viewPayment.transaction_reference || '--'}</p>
+              </div>
+            </div>
 
-              <div className="space-y-3">
-                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-                  <p className="text-[10px] font-black text-emerald-600/70 uppercase tracking-widest mb-1">Amount</p>
-                  <p className="text-2xl font-black text-emerald-700">₹{Number(viewPayment.amount || 0).toLocaleString('en-IN')}</p>
+            <div className="px-4 pb-3 flex-1 min-h-0">
+              <div className="bg-white rounded-xl border border-gray-100 overflow-hidden h-full flex flex-col">
+                <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                  Billed Items
                 </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Payment Mode</p>
-                  <p className="text-sm font-bold text-gray-800 uppercase">{viewPayment.payment_mode || '--'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Paid At</p>
-                  <p className="text-sm font-bold text-gray-800">{viewPayment.paid_at ? format(new Date(viewPayment.paid_at), 'd/M/yyyy (HH:mm)') : '--'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Transaction Reference</p>
-                  <p className="text-sm font-bold text-gray-800 break-all">{viewPayment.transaction_reference || '--'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Status</p>
-                  <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${statusColors[viewPayment.status] || 'bg-gray-100 text-gray-800'}`}>
-                    {viewPayment.status || '--'}
-                  </span>
-                </div>
+                {Array.isArray(viewPayment?.invoice_details?.items) && viewPayment.invoice_details.items.length > 0 ? (
+                  <div className="min-h-[240px] max-h-[44vh] overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 text-gray-500 uppercase text-[10px] sticky top-0 z-10">
+                        <tr>
+                          <th className="text-left px-3 py-2">Description</th>
+                          <th className="text-right px-3 py-2">Qty</th>
+                          <th className="text-right px-3 py-2">Rate</th>
+                          <th className="text-right px-3 py-2">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {viewPayment.invoice_details.items.map((it) => (
+                          <tr key={it.id}>
+                            <td className="px-3 py-2.5 text-gray-800">{it.description || '--'}</td>
+                            <td className="px-3 py-2.5 text-right text-gray-600">{it.quantity || 0}</td>
+                            <td className="px-3 py-2.5 text-right text-gray-600">₹{Number(it.unit_price || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right font-semibold text-gray-900">₹{Number(it.line_total || 0).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="min-h-[240px] flex items-center justify-center text-sm text-gray-400">
+                    No billed items
+                  </div>
+                )}
               </div>
             </div>
 
@@ -6475,6 +6740,270 @@ function PaymentSlipsListSection() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function PaymentSlipSettingsSection() {
+  const [form, setForm] = useState(() => getPaymentSlipProfile())
+
+  function onChange(key, value) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function handleSave(e) {
+    e.preventDefault()
+    savePaymentSlipProfile(form)
+    toast.success('Payment slip details saved')
+  }
+
+  function handleReset() {
+    setForm({ ...DEFAULT_PAYMENT_SLIP_PROFILE })
+    savePaymentSlipProfile(DEFAULT_PAYMENT_SLIP_PROFILE)
+    toast.success('Payment slip details reset')
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5 md:p-6">
+        <h2 className="text-lg font-black text-gray-800">Payment Slip Settings</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          These details will be printed in the payment slip header.
+        </p>
+
+        <form onSubmit={handleSave} className="mt-5 space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Hospital Name</label>
+            <input
+              type="text"
+              value={form.hospital_name || ''}
+              onChange={(e) => onChange('hospital_name', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+              placeholder="Enter hospital name"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Address</label>
+            <input
+              type="text"
+              value={form.address || ''}
+              onChange={(e) => onChange('address', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+              placeholder="Hospital address"
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Pin Code</label>
+              <input
+                type="text"
+                value={form.pin_code || ''}
+                onChange={(e) => onChange('pin_code', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                placeholder="Pin code"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Phone</label>
+              <input
+                type="text"
+                value={form.phone || ''}
+                onChange={(e) => onChange('phone', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                placeholder="+91-XXXXXXXXXX"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Email</label>
+              <input
+                type="email"
+                value={form.email || ''}
+                onChange={(e) => onChange('email', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                placeholder="info@hospital.com"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Website</label>
+            <input
+              type="text"
+              value={form.website || ''}
+              onChange={(e) => onChange('website', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+              placeholder="www.hospital.com"
+            />
+          </div>
+
+          <div className="pt-2 flex gap-2">
+            <button
+              type="submit"
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-extrabold hover:bg-emerald-700 transition-colors"
+            >
+              Save Settings
+            </button>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="px-4 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition-colors"
+            >
+              Reset Default
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function OpdSettingsSection() {
+  const [form, setForm] = useState(() => getReceptionOpdSettings())
+  const [doctors, setDoctors] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadDoctors() {
+      try {
+        const { data } = await api.get('/doctor-profiles/?limit=500')
+        if (cancelled) return
+        const rows = Array.isArray(data?.data) ? data.data : (data?.results || data || [])
+        setDoctors(rows)
+      } catch {
+        // keep dropdown empty on failure
+      }
+    }
+    loadDoctors()
+    return () => { cancelled = true }
+  }, [])
+
+  function onChange(key, value) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function handleSave(e) {
+    e.preventDefault()
+    saveReceptionOpdSettings(form)
+    toast.success('OPD settings saved')
+  }
+
+  function handleReset() {
+    setForm({ ...DEFAULT_RECEPTION_OPD_SETTINGS })
+    saveReceptionOpdSettings(DEFAULT_RECEPTION_OPD_SETTINGS)
+    toast.success('OPD settings reset')
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5 md:p-6">
+        <h2 className="text-lg font-black text-gray-800">OPD Settings</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Set default city and state for Token Queue registration form.
+        </p>
+
+        <form onSubmit={handleSave} className="mt-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Default City</label>
+              <input
+                type="text"
+                value={form.default_city || ''}
+                onChange={(e) => onChange('default_city', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                placeholder="City"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Default State</label>
+              <input
+                type="text"
+                value={form.default_state || ''}
+                onChange={(e) => onChange('default_state', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                placeholder="State"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">Default Doctor</label>
+            <select
+              value={form.default_doctor_user || ''}
+              onChange={(e) => onChange('default_doctor_user', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+            >
+              <option value="">Walk-in / Any</option>
+              {doctors.map((d) => (
+                <option key={d.user || d.id} value={String(d.user || d.id)}>
+                  {d.name}{d.consultation_fee > 0 ? ` · ₹${d.consultation_fee}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="pt-2 flex gap-2">
+            <button
+              type="submit"
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-extrabold hover:bg-emerald-700 transition-colors"
+            >
+              Save Settings
+            </button>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="px-4 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition-colors"
+            >
+              Reset Default
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function ReceptionSettingsSection({ rooms, setRooms, tvGroups, setTvGroups }) {
+  const tabs = [
+    { id: 'opd', label: 'OPD Settings', icon: Users },
+    { id: 'opd_template', label: 'OPD Template', icon: Printer },
+    { id: 'tv', label: 'TV Screens', icon: Monitor },
+    { id: 'payment_slip', label: 'Payment Slip Settings', icon: Receipt },
+  ]
+  const [tab, setTab] = useState('opd')
+
+  return (
+    <div className="flex flex-col gap-4 min-h-0">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 flex items-center gap-2 overflow-x-auto">
+        {tabs.map((t) => {
+          const Icon = t.icon
+          const active = tab === t.id
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={`shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all ${
+                active
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
+              }`}
+            >
+              <Icon size={15} />
+              {t.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="flex-1 min-h-0">
+        {tab === 'opd' && <OpdSettingsSection />}
+        {tab === 'opd_template' && (
+          <div className="h-full min-h-[72vh] bg-white rounded-2xl border border-gray-100 shadow-sm overflow-auto p-3">
+            <OpdGeneratorTab />
+          </div>
+        )}
+        {tab === 'tv' && (
+          <TVScreensSection rooms={rooms} setRooms={setRooms} tvGroups={tvGroups} setTvGroups={setTvGroups} />
+        )}
+        {tab === 'payment_slip' && <PaymentSlipSettingsSection />}
+      </div>
     </div>
   )
 }
@@ -7426,6 +7955,7 @@ function PrintIpdLedger({ admission, ledger, onClose }) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 export default function ReceptionistPortal() {
   const [section, setSection] = useState('opd')
+  const [ipdAdmissionDraft, setIpdAdmissionDraft] = useState(null)
   const nav = useNavigate()
   const user = JSON.parse(localStorage.getItem('user') || '{}')
   const [rooms, setRooms] = useState(getRoomsConfig())
@@ -7490,6 +8020,11 @@ export default function ReceptionistPortal() {
   const todayAlerts = alerts.filter(a => a.is_today)
   const tomorrowAlerts = alerts.filter(a => a.is_tomorrow)
   const sectionTitle = NAV_GROUPS.flatMap(g => g.items).find(i => i.id === section)?.label || 'Receptionist'
+
+  function handleMoveOpdToIpd(visitDraft) {
+    setIpdAdmissionDraft(visitDraft || null)
+    setSection('new_admission')
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -7604,25 +8139,25 @@ export default function ReceptionistPortal() {
       {/* Body: sidebar + content */}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeSection={section} onSelect={setSection} />
-        <main className={`flex-1 flex flex-col min-h-0 ${section === 'opd' ? 'overflow-hidden p-0' : section === 'payment_slip' ? 'overflow-hidden p-4' : 'overflow-auto p-5'}`}>
+        <main className={`flex-1 flex flex-col min-h-0 ${section === 'opd' ? 'overflow-hidden p-0' : section === 'payment_slip' ? 'overflow-hidden p-4' : section === 'settings' ? 'overflow-hidden p-5' : 'overflow-auto p-5'}`}>
           {section === 'opd' && <OPDSection rooms={rooms} />}
-            {section === 'ipd' && <IPDSection mode="ipd" />}
-            {section === 'new_admission' && <IPDSection mode="new_admission" />}
+            {section === 'ipd' && <IPDSection mode="ipd" initialAdmissionDraft={ipdAdmissionDraft} />}
+            {section === 'new_admission' && <IPDSection mode="new_admission" initialAdmissionDraft={ipdAdmissionDraft} />}
             {section === 'emergency' && <EmergencySection />}
             {section === 'patients' && <PatientListSection />}
-            {section === 'opd_history' && <OpdSlipsSection />}
+            {section === 'opd_history' && <OpdSlipsSection onMoveToIpd={handleMoveOpdToIpd} />}
             {section === 'register' && <RegisterPatientSection />}
             {section === 'payment_slip' && <PaymentSlipSection />}
             {section === 'payment_slip_list' && <PaymentSlipsListSection />}
             {section === 'discharge' && <DischargeSection />}
             {section === 'attendance' && <StaffAttendanceSection />}
-            {section === 'opd_template' && (
-              <div className="flex-1 overflow-auto">
-                <OpdGeneratorTab />
-              </div>
-            )}
-            {section === 'tv' && (
-              <TVScreensSection rooms={rooms} setRooms={setRooms} tvGroups={tvGroups} setTvGroups={setTvGroups} />
+            {section === 'settings' && (
+              <ReceptionSettingsSection
+                rooms={rooms}
+                setRooms={setRooms}
+                tvGroups={tvGroups}
+                setTvGroups={setTvGroups}
+              />
             )}
           </main>
       </div>

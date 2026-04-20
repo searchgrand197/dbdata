@@ -14,14 +14,16 @@ from rest_framework.response import Response
 from apps.auditlogs.services import create_audit_log
 from apps.billing.models import BillingInvoice
 from apps.opd.models import OPDVisit
-from apps.payments.models import CashHandover, PaymentTransaction
+from apps.payments.models import CashHandover, PaymentQuickService, PaymentTransaction
 from apps.payments.serializers import PaymentTransactionCreateSerializer, PaymentTransactionSerializer
 from apps.roles_permissions.permissions import HasRequiredPermission
 from apps.shared.response import success_response
 
 
 class PaymentTransactionViewSet(viewsets.ModelViewSet):
-    queryset = PaymentTransaction.objects.all().select_related("invoice", "collected_by")
+    queryset = PaymentTransaction.objects.all().select_related("invoice", "invoice__patient", "collected_by").prefetch_related(
+        "invoice__items"
+    )
     filter_backends = (SearchFilter, OrderingFilter)
     search_fields = ("invoice__invoice_no", "invoice__patient__uhid", "transaction_reference", "receipt_no")
     ordering_fields = ("paid_at", "created_at", "amount")
@@ -443,3 +445,50 @@ def verify_handover(request):
 
     handover.save(update_fields=["status", "accepted_at", "notes", "updated_at"])
     return success_response(data=_serialize_handover(handover))
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([permissions.IsAuthenticated])
+@transaction.atomic
+def payment_quick_services(request):
+    hospital_id = getattr(request.user, "hospital_id", None)
+    if not hospital_id:
+        return Response({"success": False, "detail": "Hospital context required."}, status=400)
+
+    if request.method == "GET":
+        rows = (
+            PaymentQuickService.objects.filter(hospital_id=hospital_id, is_active=True)
+            .order_by("sort_order", "created_at")
+        )
+        data = [{"label": r.label, "price": float(r.price)} for r in rows]
+        return success_response(data=data)
+
+    services = request.data.get("services")
+    if not isinstance(services, list):
+        return Response({"success": False, "errors": {"services": ["Must be a list."]}}, status=400)
+
+    PaymentQuickService.objects.filter(hospital_id=hospital_id).delete()
+    create_rows = []
+    for idx, row in enumerate(services):
+        label = str((row or {}).get("label") or "").strip()
+        if not label:
+            continue
+        try:
+            price = Decimal(str((row or {}).get("price") or "0"))
+        except Exception:
+            price = Decimal("0")
+        if price < 0:
+            price = Decimal("0")
+        create_rows.append(
+            PaymentQuickService(
+                hospital_id=hospital_id,
+                label=label[:120],
+                price=price,
+                sort_order=idx,
+                is_active=True,
+            )
+        )
+    if create_rows:
+        PaymentQuickService.objects.bulk_create(create_rows)
+    data = [{"label": r.label, "price": float(r.price)} for r in create_rows]
+    return success_response(data=data)

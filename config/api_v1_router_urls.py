@@ -35,7 +35,7 @@ from apps.inventory.views import (
 from apps.ipd.views import IPDAdmissionViewSet
 from apps.opd.views import OPDVisitViewSet, follow_up_alerts
 from apps.patients.views import PatientViewSet
-from apps.payments.views import PaymentTransactionViewSet
+from apps.payments.views import PaymentTransactionViewSet, payment_quick_services
 from apps.roles_permissions.user_permission_views import UserPermissionProfileViewSet
 from apps.shared.routers import PublicApiRootRouter
 from apps.staff.views import (
@@ -159,6 +159,7 @@ urlpatterns = [
     ),
     path("purchase/history/", PurchaseHistoryListView.as_view(), name="purchase-history"),
     path("purchase/history/<uuid:pk>/", PurchaseHistoryDetailView.as_view(), name="purchase-history-detail"),
+    path("payments/quick-services/", payment_quick_services, name="payments-quick-services"),
     path("treatment/patient-overview/", PatientPlanOverviewView.as_view(), name="treatment-patient-overview"),
     path("", include(router.urls)),
 ]

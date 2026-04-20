@@ -78,13 +78,33 @@ class MedicineCategorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MedicineCategory
-        fields = ["id", "hospital_id", "name", "is_active", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "hospital_id",
+            "name",
+            "is_active",
+            "rule_type",
+            "allow_loose_sale",
+            "base_unit_label",
+            "retail_pack_label",
+            "outer_pack_label",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class MedicineCategoryCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = MedicineCategory
-        fields = ["name", "is_active"]
+        fields = [
+            "name",
+            "is_active",
+            "rule_type",
+            "allow_loose_sale",
+            "base_unit_label",
+            "retail_pack_label",
+            "outer_pack_label",
+        ]
 
 
 class MedicineBatchSerializer(serializers.ModelSerializer):

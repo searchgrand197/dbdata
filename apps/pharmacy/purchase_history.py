@@ -59,7 +59,7 @@ def _qty_display(ch: PharmacyPurchaseChallan) -> str:
 def _challan_status(ch: PharmacyPurchaseChallan, batch_ids: list[Any], today: date) -> str:
     for ln in ch.lines.all():
         b = ln.batch
-        exp = b.expiry_date if b else None
+        exp = (b.expiry_date if b else None) or ln.snapshot_expiry_date
         if exp and exp < today:
             return "expired"
     if not batch_ids:
@@ -80,7 +80,7 @@ def _challan_status(ch: PharmacyPurchaseChallan, batch_ids: list[Any], today: da
 
 def build_tile_dict(ch: PharmacyPurchaseChallan, today: date | None = None) -> dict[str, Any]:
     today = today or timezone.now().date()
-    batch_ids = list(ch.lines.values_list("batch_id", flat=True))
+    batch_ids = [bid for bid in ch.lines.values_list("batch_id", flat=True) if bid]
     return {
         "id": str(ch.id),
         "challan_no": ch.challan_no or "—",
@@ -125,6 +125,7 @@ def filter_challan_queryset(
             | Q(supplier__name__icontains=q)
             | Q(lines__medicine__name__icontains=q)
             | Q(lines__batch__batch_no__icontains=q)
+            | Q(lines__snapshot_batch_no__icontains=q)
         ).distinct()
     return qs
 
@@ -161,8 +162,10 @@ def detail_purchase_history(*, hospital_id, pk) -> dict[str, Any] | None:
     batch_ids: list[Any] = []
 
     for ln in ch.lines.all().order_by("created_at"):
-        batch_ids.append(ln.batch_id)
-        exp = ln.batch.expiry_date
+        if ln.batch_id:
+            batch_ids.append(ln.batch_id)
+        b = ln.batch
+        exp = (b.expiry_date if b else None) or ln.snapshot_expiry_date
         expiring_soon = bool(exp and today <= exp <= near_expiry)
         expired = bool(exp and exp < today)
 
@@ -190,8 +193,8 @@ def detail_purchase_history(*, hospital_id, pk) -> dict[str, Any] | None:
                 "id": str(ln.id),
                 "medicine_id": str(ln.medicine_id),
                 "medicine_name": ln.medicine.name,
-                "batch_no": ln.batch.batch_no,
-                "expiry_date": ln.batch.expiry_date.isoformat() if ln.batch.expiry_date else None,
+                "batch_no": (ln.batch.batch_no if ln.batch_id else None) or ln.snapshot_batch_no or "—",
+                "expiry_date": exp.isoformat() if exp else None,
                 "expiring_within_90_days": expiring_soon,
                 "expired": expired,
                 "pack_quantity": str(ln.pack_quantity),

@@ -332,6 +332,38 @@ class MedicineBatchViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
         refreshed = self.get_queryset().get(pk=instance.pk)
         return Response(MedicineBatchSerializer(refreshed, context={"request": request}).data)
 
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        from apps.pharmacy.models import PharmacyInvoiceItem, PharmacyPurchaseChallanLine
+
+        instance = self.get_object()
+        bn = instance.batch_no
+        exp = instance.expiry_date
+        PharmacyInvoiceItem.objects.filter(batch_id=instance.id).update(
+            snapshot_batch_no=bn,
+            snapshot_expiry_date=exp,
+            batch_id=None,
+        )
+        PharmacyPurchaseChallanLine.objects.filter(batch_id=instance.id).update(
+            snapshot_batch_no=bn,
+            snapshot_expiry_date=exp,
+            batch_id=None,
+        )
+        create_audit_log(
+            request=request,
+            hospital=instance.hospital,
+            module="inventory",
+            action="delete_batch",
+            obj=instance,
+            before={
+                "batch_no": instance.batch_no,
+                "expiry_date": str(instance.expiry_date) if instance.expiry_date else "",
+                "medicine_id": str(instance.medicine_id),
+            },
+        )
+        StockLedger.objects.filter(batch_id=instance.id).delete()
+        return super().destroy(request, *args, **kwargs)
+
 
 class StockLedgerViewSet(HospitalScopedMixin, viewsets.ModelViewSet):
     queryset = StockLedger.objects.all().select_related("medicine", "batch", "hospital").order_by("-created_at")

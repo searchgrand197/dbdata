@@ -86,7 +86,15 @@ class PharmacyPurchaseChallanLine(TimeStampedModel, UUIDPrimaryKeyModel):
         related_name="lines",
     )
     medicine = models.ForeignKey(Medicine, on_delete=models.PROTECT, related_name="purchase_challan_lines")
-    batch = models.ForeignKey(MedicineBatch, on_delete=models.PROTECT, related_name="purchase_challan_lines")
+    batch = models.ForeignKey(
+        MedicineBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_challan_lines",
+    )
+    snapshot_batch_no = models.CharField(max_length=80, blank=True, default="")
+    snapshot_expiry_date = models.DateField(null=True, blank=True)
 
     quantity_basis = models.CharField(max_length=10, default="pack")  # pack | base
     pack_type = models.CharField(max_length=40, blank=True, default="")
@@ -112,8 +120,15 @@ class PharmacyPurchaseChallanLine(TimeStampedModel, UUIDPrimaryKeyModel):
         ordering = ("created_at", "id")
         indexes = [models.Index(fields=["challan", "medicine"], name="pharm_pcline_ch_med_idx")]
 
+    def save(self, *args, **kwargs):
+        b = self.batch
+        if b is not None:
+            self.snapshot_batch_no = b.batch_no
+            self.snapshot_expiry_date = b.expiry_date
+        super().save(*args, **kwargs)
+
     def __str__(self) -> str:
-        return f"{self.medicine_id} / {self.batch_id}"
+        return f"{self.medicine_id} / {self.batch_id or self.snapshot_batch_no or '—'}"
 
 
 class PharmacyOutletSettings(TimeStampedModel, UUIDPrimaryKeyModel):
@@ -128,6 +143,7 @@ class PharmacyOutletSettings(TimeStampedModel, UUIDPrimaryKeyModel):
     email = models.CharField(max_length=120, blank=True, default="")
     website = models.CharField(max_length=200, blank=True, default="")
     default_gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
+    default_sale_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
 
     def __str__(self) -> str:
         return f"Pharmacy settings ({self.hospital_id})"
@@ -173,7 +189,15 @@ class PharmacyInvoice(TimeStampedModel, UUIDPrimaryKeyModel):
 class PharmacyInvoiceItem(TimeStampedModel, UUIDPrimaryKeyModel):
     invoice = models.ForeignKey(PharmacyInvoice, on_delete=models.CASCADE, related_name="items")
     medicine = models.ForeignKey(Medicine, on_delete=models.PROTECT, related_name="pharmacy_sale_items")
-    batch = models.ForeignKey(MedicineBatch, on_delete=models.PROTECT, related_name="pharmacy_sale_items")
+    batch = models.ForeignKey(
+        MedicineBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pharmacy_sale_items",
+    )
+    snapshot_batch_no = models.CharField(max_length=80, blank=True, default="")
+    snapshot_expiry_date = models.DateField(null=True, blank=True)
     
     qty = models.DecimalField(max_digits=12, decimal_places=2)
     mrp = models.DecimalField(max_digits=12, decimal_places=2)
@@ -184,6 +208,13 @@ class PharmacyInvoiceItem(TimeStampedModel, UUIDPrimaryKeyModel):
     
     amount = models.DecimalField(max_digits=12, decimal_places=2) # Excluding tax? Or total?
     # I'll store the total amount for this row (qty * rate) including tax if needed, but standard GST is often rate * qty + taxes.
-    
+
+    def save(self, *args, **kwargs):
+        b = self.batch
+        if b is not None:
+            self.snapshot_batch_no = b.batch_no
+            self.snapshot_expiry_date = b.expiry_date
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.medicine.name} x {self.qty}"

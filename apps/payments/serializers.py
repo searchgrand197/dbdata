@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from apps.billing.serializers import BillingInvoiceSerializer
 from apps.payments.models import PaymentTransaction
 
 
@@ -9,6 +10,7 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
     patient_uhid = serializers.CharField(source="invoice.patient.uhid", read_only=True)
     patient_name = serializers.SerializerMethodField()
     collected_by_name = serializers.CharField(source="collected_by.full_name", read_only=True)
+    invoice_details = BillingInvoiceSerializer(source="invoice", read_only=True)
 
     class Meta:
         model = PaymentTransaction
@@ -17,6 +19,7 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
             "hospital_id",
             "invoice",
             "invoice_no",
+            "invoice_details",
             "patient_name",
             "patient_uhid",
             "payment_mode",

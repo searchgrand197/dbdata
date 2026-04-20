@@ -312,6 +312,7 @@ export function computePurchaseLineAmounts({
 export function parseApiError(err) {
   const d = err?.response?.data
   if (!d) return err?.message || 'Request failed'
+  if (typeof d.errors === 'string') return d.errors
   if (typeof d.detail === 'string') return d.detail
   if (Array.isArray(d.non_field_errors)) return d.non_field_errors.join(' ')
   const payload = d.errors && typeof d.errors === 'object' ? d.errors : d

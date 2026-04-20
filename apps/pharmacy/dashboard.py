@@ -175,6 +175,71 @@ def _cash_block(hospital_id, date_from, date_to):
     }
 
 
+def _today_sales_block(hospital_id, target_date=None):
+    """Selected-day finalized sale split by payment method (defaults to today)."""
+    today = target_date or timezone.now().date()
+    qs = PharmacyInvoice.objects.filter(
+        hospital_id=hospital_id,
+        status=PharmacyInvoice.Status.FINALIZED,
+        date=today,
+    ).select_related("patient").prefetch_related("items__batch")
+    by_method = {
+        "cash": {"amount": ZERO, "margin": ZERO},
+        "upi": {"amount": ZERO, "margin": ZERO},
+        "other": {"amount": ZERO, "margin": ZERO},
+        "credit": {"amount": ZERO, "margin": ZERO},
+    }
+    invoice_rows = []
+    total_margin = ZERO
+
+    for inv in qs:
+        method = (inv.payment_method or "").strip().lower()
+        key = method if method in by_method else "other"
+        inv_total = inv.grand_total or ZERO
+        due = inv_total - (inv.paid_amount or ZERO)
+        inv_margin = ZERO
+        for it in inv.items.all():
+            qty = it.qty or ZERO
+            rate = it.rate or ZERO
+            unit_cost = ZERO
+            if it.batch_id and it.batch:
+                unit_cost = it.batch.unit_cost or ZERO
+            inv_margin += (rate - unit_cost) * qty
+
+        by_method[key]["amount"] += inv_total
+        by_method[key]["margin"] += inv_margin
+        total_margin += inv_margin
+        invoice_rows.append(
+            {
+                "id": str(inv.id),
+                "invoice_no": inv.invoice_no,
+                "date": str(inv.date) if inv.date else None,
+                "payment_method": key,
+                "patient_name": f"{(inv.patient.first_name or '').strip()} {(inv.patient.last_name or '').strip()}".strip(),
+                "grand_total": float(inv_total),
+                "paid_amount": float(inv.paid_amount or ZERO),
+                "due_amount": float(max(due, ZERO)),
+                "margin": float(inv_margin),
+            }
+        )
+
+    total = sum([by_method[k]["amount"] for k in by_method.keys()], ZERO)
+    return {
+        "date": str(today),
+        "total": float(total),
+        "total_margin": float(total_margin),
+        "cash": float(by_method["cash"]["amount"]),
+        "cash_margin": float(by_method["cash"]["margin"]),
+        "upi": float(by_method["upi"]["amount"]),
+        "upi_margin": float(by_method["upi"]["margin"]),
+        "other": float(by_method["other"]["amount"]),
+        "other_margin": float(by_method["other"]["margin"]),
+        "credit": float(by_method["credit"]["amount"]),
+        "credit_margin": float(by_method["credit"]["margin"]),
+        "details": invoice_rows,
+    }
+
+
 class PharmacyDashboardView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -187,6 +252,9 @@ class PharmacyDashboardView(APIView):
             )
         hospital_id = hospital.id
         date_from, date_to = _parse_dates(request.query_params)
+        today_date = parse_date((request.query_params.get("today_date") or "").strip() or "")
+        if today_date is None:
+            today_date = timezone.now().date()
         gst = request.query_params.get("gst", "1") == "1"
 
         data = {
@@ -195,5 +263,7 @@ class PharmacyDashboardView(APIView):
             "stock": _stock_block(hospital_id),
             "customers": _customers_block(hospital_id, date_from, date_to, gst),
             "cash": _cash_block(hospital_id, date_from, date_to),
+            "today_sales": _today_sales_block(hospital_id, target_date=today_date),
+            "today_total_for_tab": _today_sales_block(hospital_id, target_date=timezone.now().date()).get("total", 0.0),
         }
         return success_response(data)
