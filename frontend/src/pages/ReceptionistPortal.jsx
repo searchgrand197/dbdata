@@ -4797,6 +4797,20 @@ function PaymentSlipSection() {
         : invoice.paymentMode === 'upi'
           ? 'UPI Payment'
           : 'Credit / Due'
+    const slipProfile = getPaymentSlipProfile()
+    const hospitalName = escapeHtml(slipProfile.hospital_name || DEFAULT_PAYMENT_SLIP_PROFILE.hospital_name)
+    const address = escapeHtml(slipProfile.address || '')
+    const pinCode = escapeHtml(slipProfile.pin_code || '')
+    const phone = escapeHtml(slipProfile.phone || '')
+    const email = escapeHtml(slipProfile.email || '')
+    const website = escapeHtml(slipProfile.website || '')
+    const profileLines = [
+      address ? `${address}<br/>` : '',
+      pinCode ? `Pin Code: ${pinCode}<br/>` : '',
+      phone ? `Phone: ${phone}<br/>` : '',
+      email ? `Email: ${email}<br/>` : '',
+      website ? `Website: ${website}` : '',
+    ].filter(Boolean).join('')
 
     const rows = (invoice.items || []).map((it, i) =>
       `<tr>
@@ -4935,14 +4949,11 @@ function PaymentSlipSection() {
       <!-- TOP HEADER -->
       <div class="top">
         <div>
-          <div class="hosp-name">Vardraan Hospital</div>
+          <div class="hosp-name">${hospitalName}</div>
           <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
         </div>
         <div class="address">
-          <strong>Jind, Haryana</strong><br/>
-          Pincode: 126102<br/>
-          Phone: +91-XXXXXXXXXX<br/>
-          Email: info@vardraanhospital.com
+          ${profileLines || '&mdash;'}
         </div>
       </div>
 
