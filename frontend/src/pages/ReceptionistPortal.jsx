@@ -32,6 +32,13 @@ const DEFAULT_RECEPTION_OPD_SETTINGS = {
   default_doctor_user: '',
 }
 
+function clearAuthStorage() {
+  localStorage.removeItem('access')
+  localStorage.removeItem('refresh')
+  localStorage.removeItem('role')
+  localStorage.removeItem('user')
+}
+
 function getReceptionOpdSettings() {
   try {
     const raw = localStorage.getItem(RECEPTION_OPD_SETTINGS_KEY)
@@ -7976,7 +7983,7 @@ export default function ReceptionistPortal() {
   const bellRef = useRef(null)
 
   function logout() {
-    localStorage.clear()
+    clearAuthStorage()
     nav('/login')
   }
 

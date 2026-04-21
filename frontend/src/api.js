@@ -2,6 +2,13 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api/v1' })
 
+function clearAuthStorage() {
+  localStorage.removeItem('access')
+  localStorage.removeItem('refresh')
+  localStorage.removeItem('role')
+  localStorage.removeItem('user')
+}
+
 // Helper – read hospital_id from the stored user object
 export function getHospitalId() {
   try {
@@ -38,7 +45,7 @@ api.interceptors.response.use(
       originalRequest._retry = true
       const refresh = localStorage.getItem('refresh')
       if (!refresh) {
-        localStorage.clear()
+        clearAuthStorage()
         window.location.href = '/login'
         return Promise.reject(err)
       }
@@ -56,7 +63,7 @@ api.interceptors.response.use(
             return access
           })
           .catch(refreshErr => {
-            localStorage.clear()
+            clearAuthStorage()
             window.location.href = '/login'
             return Promise.reject(refreshErr)
           })
