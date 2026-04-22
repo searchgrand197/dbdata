@@ -482,6 +482,8 @@ function OPDSection({ rooms }) {
   const [layoutFields, setLayoutFields] = useState([])
   const [templateValues, setTemplateValues] = useState({})
   const normalizeId = (value) => (value == null ? '' : String(value))
+  const getDoctorUserId = (doctorRow) =>
+    normalizeId(doctorRow?.user ?? doctorRow?.user_id ?? doctorRow?.userId)
   const getRoomForDoctorUser = (doctorUser) => {
     const id = normalizeId(doctorUser)
     if (!id) return null
@@ -851,7 +853,7 @@ function OPDSection({ rooms }) {
         status: 'waiting',
       })
       const payload = data?.data || data
-      const selectedDoc = doctors.find(d => d.user === form.doctor || d.id === form.doctor)
+      const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(form.doctor))
       const selectedRoom = getRoomForDoctorUser(form.doctor)
       // Use form.patient_name if filled; otherwise fall back to the matched patient's name
       const ptName = capitalizePersonName((form.patient_name || '').trim()) ||
@@ -1279,7 +1281,7 @@ function OPDSection({ rooms }) {
             <label className={lbl}>Doctor</label>
             <select value={form.doctor} onChange={e => {
               const selectedDocId = e.target.value
-              const selectedDoc = doctors.find(d => normalizeId(d.user || d.id) === normalizeId(selectedDocId))
+              const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(selectedDocId))
               const fee = selectedDoc?.consultation_fee
               setForm(f => ({
                 ...f,
@@ -1288,8 +1290,8 @@ function OPDSection({ rooms }) {
               }))
             }} className={inp}>
               <option value="">Walk-in / Any</option>
-              {doctors.map(d => (
-                <option key={d.user || d.id} value={d.user || d.id}>
+              {doctors.filter(d => getDoctorUserId(d)).map(d => (
+                <option key={getDoctorUserId(d)} value={getDoctorUserId(d)}>
                   {d.name}{d.consultation_fee > 0 ? ` · ₹${d.consultation_fee}` : ''}
                 </option>
               ))}
@@ -5825,6 +5827,8 @@ function OpdSlipsSection({ onMoveToIpd }) {
   const [doctors, setDoctors] = useState([])
   const PAGE_SIZE = 10
   const debounceRef = useRef(null)
+  const getDoctorUserId = (doctorRow) =>
+    doctorRow?.user == null ? '' : String(doctorRow.user)
 
   useEffect(() => {
     api.get('/doctor-profiles/?limit=500').then(({ data }) => setDoctors(Array.isArray(data?.data) ? data.data : (data?.results || data || []))).catch(() => {})
@@ -6026,7 +6030,13 @@ function OpdSlipsSection({ onMoveToIpd }) {
                   <label className="block text-xs font-bold text-gray-600 mb-1">Doctor</label>
                   <select value={editingVisit.doctor_user || ''} onChange={e => setEditingVisit({...editingVisit, doctor_user: e.target.value})} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none">
                      <option value="">-- No Doctor --</option>
-                     {doctors.map(d => <option key={d.id || d.user} value={d.id || d.user}>Dr. {d.name || d.first_name || d.email}</option>)}
+                     {doctors
+                       .filter(d => getDoctorUserId(d))
+                       .map(d => (
+                         <option key={getDoctorUserId(d)} value={getDoctorUserId(d)}>
+                           Dr. {d.name || d.first_name || d.email}
+                         </option>
+                       ))}
                   </select>
                </div>
                <div>
