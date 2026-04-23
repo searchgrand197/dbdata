@@ -3,7 +3,7 @@
 # fixed all issues includind vardraan into vardaan
 Django REST API backend + React admin UI.
 
-## Backend
+## Backend thing
 
 ```bash
 .\.venv\Scripts\python.exe manage.py runserver 127.0.0.1:8000

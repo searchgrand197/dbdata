@@ -581,6 +581,18 @@ function OPDSection({ rooms }) {
     } catch {}
   }
 
+  useEffect(() => {
+    // When a default doctor is preselected (from OPD settings), auto-fill fee after doctors load.
+    if (!form.doctor || form.amount) return
+    const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(form.doctor))
+    const fee = getDoctorFee(selectedDoc)
+    if (fee == null) return
+    setForm(f => {
+      if (normalizeId(f.doctor) !== normalizeId(form.doctor) || f.amount) return f
+      return { ...f, amount: String(fee) }
+    })
+  }, [doctors, form.doctor, form.amount])
+
   async function fetchQueue() {
     setLoading(true)
     try {
