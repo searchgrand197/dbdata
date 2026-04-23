@@ -461,7 +461,7 @@ function OPDSection({ rooms }) {
   const [collectionEntries, setCollectionEntries] = useState([])
 
   // Unified patient+OPD form
-  const emptyForm = {
+  const buildEmptyForm = () => ({
     phone: '',
     patient_name: '',
     gender: 'male',
@@ -475,8 +475,8 @@ function OPDSection({ rooms }) {
     payment_mode: 'cash',
     chief_complaint: '',
     visit_date: format(new Date(), 'yyyy-MM-dd'),
-  }
-  const [form, setForm] = useState(emptyForm)
+  })
+  const [form, setForm] = useState(() => buildEmptyForm())
   const [matchedPatient, setMatchedPatient] = useState(null)  // existing patient found by phone
   const [opdNewPersonSamePhone, setOpdNewPersonSamePhone] = useState(false) // register different person; same mobile → family link
   const samePhoneModeDigitsRef = useRef(null)
@@ -613,6 +613,29 @@ function OPDSection({ rooms }) {
       return { ...f, amount: String(fee) }
     })
   }, [doctors, form.doctor, form.amount])
+
+  useEffect(() => {
+    // On hard refresh, settings load async. Backfill defaults into an untouched form.
+    setForm((f) => {
+      const next = { ...f }
+      let changed = false
+
+      if (!f.city && defaultCity) {
+        next.city = defaultCity
+        changed = true
+      }
+      if (!f.state && defaultState) {
+        next.state = defaultState
+        changed = true
+      }
+      if (!f.doctor && defaultDoctorUser) {
+        next.doctor = defaultDoctorUser
+        changed = true
+      }
+
+      return changed ? next : f
+    })
+  }, [defaultCity, defaultState, defaultDoctorUser])
 
   async function fetchQueue() {
     setLoading(true)
@@ -965,7 +988,7 @@ function OPDSection({ rooms }) {
         })
       }
 
-      setForm(emptyForm)
+      setForm(buildEmptyForm())
       setTemplateValues({})
       setMatchedPatient(null)
       setOpdNewPersonSamePhone(false)
