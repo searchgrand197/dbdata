@@ -492,9 +492,30 @@ function OPDSection({ rooms }) {
   const submitActionRef = useRef('thermal')
   const [layoutFields, setLayoutFields] = useState([])
   const [templateValues, setTemplateValues] = useState({})
-  const normalizeId = (value) => (value == null ? '' : String(value))
+  const normalizeId = (value) => {
+    if (value == null) return ''
+    if (typeof value === 'object') {
+      return String(value.id ?? value.pk ?? value.user_id ?? '')
+    }
+    return String(value)
+  }
   const getDoctorUserId = (doctorRow) =>
-    normalizeId(doctorRow?.user ?? doctorRow?.user_id ?? doctorRow?.userId)
+    normalizeId(doctorRow?.user ?? doctorRow?.user_id ?? doctorRow?.userId ?? doctorRow?.doctor_user)
+  const doctorMatchesSelectedId = (doctorRow, selectedId) => {
+    const target = normalizeId(selectedId)
+    if (!target) return false
+    const ids = [
+      doctorRow?.user,
+      doctorRow?.user_id,
+      doctorRow?.userId,
+      doctorRow?.doctor_user,
+      doctorRow?.id,
+      doctorRow?.pk,
+    ].map(normalizeId).filter(Boolean)
+    return ids.includes(target)
+  }
+  const findDoctorBySelectedId = (doctorRows, selectedId) =>
+    (doctorRows || []).find((doctorRow) => doctorMatchesSelectedId(doctorRow, selectedId))
   const getDoctorFee = (doctorRow) => {
     const rawFee = doctorRow?.consultation_fee ?? doctorRow?.consultationFee ?? doctorRow?.fee
     if (rawFee == null || rawFee === '') return null
@@ -584,7 +605,7 @@ function OPDSection({ rooms }) {
   useEffect(() => {
     // When a default doctor is preselected (from OPD settings), auto-fill fee after doctors load.
     if (!form.doctor || form.amount) return
-    const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(form.doctor))
+    const selectedDoc = findDoctorBySelectedId(doctors, form.doctor)
     const fee = getDoctorFee(selectedDoc)
     if (fee == null) return
     setForm(f => {
@@ -609,7 +630,7 @@ function OPDSection({ rooms }) {
           ...vis,
           room,
           display_token: buildDisplayToken(vis, room),
-          doc_name: doctorRows.find(x => x.user === vis.doctor_user)?.name || vis.doctor_user || '—',
+          doc_name: findDoctorBySelectedId(doctorRows, vis.doctor_user)?.name || vis.doctor_user || '—',
         }
       }))
       // Keep shift collection totals in sync with newly created/updated visits.
@@ -882,7 +903,7 @@ function OPDSection({ rooms }) {
         status: 'waiting',
       })
       const payload = data?.data || data
-      const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(form.doctor))
+      const selectedDoc = findDoctorBySelectedId(doctors, form.doctor)
       const selectedRoom = getRoomForDoctorUser(form.doctor)
       // Use form.patient_name if filled; otherwise fall back to the matched patient's name
       const ptName = capitalizePersonName((form.patient_name || '').trim()) ||
@@ -1310,7 +1331,7 @@ function OPDSection({ rooms }) {
             <label className={lbl}>Doctor</label>
             <select value={form.doctor} onChange={e => {
               const selectedDocId = e.target.value
-              const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(selectedDocId))
+              const selectedDoc = findDoctorBySelectedId(doctors, selectedDocId)
               const fee = getDoctorFee(selectedDoc)
               setForm(f => ({
                 ...f,
