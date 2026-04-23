@@ -1,5 +1,6 @@
 # Hospital Management System (HMS)
 # naveen code
+# fixed all issues includind vardraan into vardaan
 Django REST API backend + React admin UI.
 
 ## Backend

@@ -15,21 +15,24 @@ import { getRoomsConfig, saveRoomsConfig, getTvGroupsConfig, saveTvGroupsConfig 
 import BedSelector from '../components/BedSelector'
 import OpdGeneratorTab from '../components/OpdTemplateEditor/OpdGeneratorTab'
 
-const PAYMENT_SLIP_PROFILE_KEY = 'reception.payment_slip_profile.v1'
 const DEFAULT_PAYMENT_SLIP_PROFILE = {
   hospital_name: 'Vardraan Hospital',
   address: 'Jind, Haryana, 126102',
   pin_code: '126102',
   phone: '+91-XXXXXXXXXX',
   email: 'info@vardraanhospital.com',
-  website: '',
+  website: 'www.vardraanhospital.com',
 }
 
-const RECEPTION_OPD_SETTINGS_KEY = 'reception.opd_settings.v1'
 const DEFAULT_RECEPTION_OPD_SETTINGS = {
   default_city: 'Jind',
   default_state: 'Haryana',
   default_doctor_user: '',
+}
+
+let receptionPortalSettingsCache = {
+  ...DEFAULT_RECEPTION_OPD_SETTINGS,
+  ...DEFAULT_PAYMENT_SLIP_PROFILE,
 }
 
 function clearAuthStorage() {
@@ -40,58 +43,66 @@ function clearAuthStorage() {
 }
 
 function getReceptionOpdSettings() {
-  try {
-    const raw = localStorage.getItem(RECEPTION_OPD_SETTINGS_KEY)
-    if (!raw) return { ...DEFAULT_RECEPTION_OPD_SETTINGS }
-    const parsed = JSON.parse(raw)
-    return {
-      ...DEFAULT_RECEPTION_OPD_SETTINGS,
-      ...(parsed && typeof parsed === 'object' ? parsed : {}),
-    }
-  } catch {
-    return { ...DEFAULT_RECEPTION_OPD_SETTINGS }
+  return {
+    default_city: receptionPortalSettingsCache.default_city || DEFAULT_RECEPTION_OPD_SETTINGS.default_city,
+    default_state: receptionPortalSettingsCache.default_state || DEFAULT_RECEPTION_OPD_SETTINGS.default_state,
+    default_doctor_user: receptionPortalSettingsCache.default_doctor_user || '',
   }
 }
 
-function saveReceptionOpdSettings(settings) {
+async function loadReceptionPortalSettings() {
   try {
-    localStorage.setItem(RECEPTION_OPD_SETTINGS_KEY, JSON.stringify({
-      default_city: settings.default_city || '',
-      default_state: settings.default_state || '',
-      default_doctor_user: settings.default_doctor_user || '',
-    }))
+    const { data } = await api.get('/settings/reception-portal/')
+    const row = data?.data || data || {}
+    receptionPortalSettingsCache = {
+      ...receptionPortalSettingsCache,
+      default_city: row.default_city ?? receptionPortalSettingsCache.default_city,
+      default_state: row.default_state ?? receptionPortalSettingsCache.default_state,
+      default_doctor_user: row.default_doctor_user ? String(row.default_doctor_user) : '',
+      hospital_name: row.hospital_name ?? receptionPortalSettingsCache.hospital_name,
+      address: row.address ?? receptionPortalSettingsCache.address,
+      pin_code: row.pin_code ?? receptionPortalSettingsCache.pin_code,
+      phone: row.phone ?? receptionPortalSettingsCache.phone,
+      email: row.email ?? receptionPortalSettingsCache.email,
+      website: row.website ?? receptionPortalSettingsCache.website,
+    }
   } catch {
-    // best effort persistence
+    // keep defaults if API fails
   }
+}
+
+async function saveReceptionOpdSettings(settings) {
+  const payload = {
+    default_city: settings.default_city || '',
+    default_state: settings.default_state || '',
+    default_doctor_user: settings.default_doctor_user || null,
+  }
+  await api.patch('/settings/reception-portal/', payload)
+  receptionPortalSettingsCache = { ...receptionPortalSettingsCache, ...payload, default_doctor_user: payload.default_doctor_user || '' }
 }
 
 function getPaymentSlipProfile() {
-  try {
-    const raw = localStorage.getItem(PAYMENT_SLIP_PROFILE_KEY)
-    if (!raw) return { ...DEFAULT_PAYMENT_SLIP_PROFILE }
-    const parsed = JSON.parse(raw)
-    return {
-      ...DEFAULT_PAYMENT_SLIP_PROFILE,
-      ...(parsed && typeof parsed === 'object' ? parsed : {}),
-    }
-  } catch {
-    return { ...DEFAULT_PAYMENT_SLIP_PROFILE }
+  return {
+    hospital_name: receptionPortalSettingsCache.hospital_name || DEFAULT_PAYMENT_SLIP_PROFILE.hospital_name,
+    address: receptionPortalSettingsCache.address || DEFAULT_PAYMENT_SLIP_PROFILE.address,
+    pin_code: receptionPortalSettingsCache.pin_code || DEFAULT_PAYMENT_SLIP_PROFILE.pin_code,
+    phone: receptionPortalSettingsCache.phone || DEFAULT_PAYMENT_SLIP_PROFILE.phone,
+    email: receptionPortalSettingsCache.email || DEFAULT_PAYMENT_SLIP_PROFILE.email,
+    website: receptionPortalSettingsCache.website || DEFAULT_PAYMENT_SLIP_PROFILE.website,
   }
 }
 
-function savePaymentSlipProfile(profile) {
-  try {
-    localStorage.setItem(PAYMENT_SLIP_PROFILE_KEY, JSON.stringify({
-      hospital_name: profile.hospital_name || '',
-      address: profile.address || '',
-      pin_code: profile.pin_code || '',
-      phone: profile.phone || '',
-      email: profile.email || '',
-      website: profile.website || '',
-    }))
-  } catch {
-    // best effort persistence
+async function savePaymentSlipProfile(profile) {
+  const payload = {
+    hospital_name: profile.hospital_name || '',
+    address: profile.address || '',
+    pin_code: profile.pin_code || '',
+    phone: profile.phone || '',
+    email: profile.email || '',
+    website: profile.website || '',
   }
+  await api.patch('/settings/reception-portal/', payload)
+  receptionPortalSettingsCache = { ...receptionPortalSettingsCache, ...payload }
 }
 
 function escapeHtml(value) {
@@ -3063,35 +3074,49 @@ function EmergencySection() {
     } catch {}
   }
 
-  function loadCases() {
+  async function loadCases() {
     setLoading(true)
-    const raw = JSON.parse(localStorage.getItem('emergency_cases') || '[]')
-    setCases(raw)
-    setLoading(false)
+    try {
+      const { data } = await api.get('/emergency/cases/?limit=500')
+      const rows = Array.isArray(data?.data) ? data.data : (data?.results || data || [])
+      setCases(rows)
+    } catch {
+      toast.error('Failed to load emergency cases')
+      setCases([])
+    } finally {
+      setLoading(false)
+    }
   }
 
-  function addCase(e) {
+  async function addCase(e) {
     e.preventDefault()
-    const entry = {
-      id: Date.now(),
-      ...form,
-      arrived_at: new Date().toISOString(),
-      status: 'waiting',
+    try {
+      const { data } = await api.post('/emergency/cases/', {
+        patient_name: form.patient_name,
+        contact: form.contact || '',
+        complaint: form.complaint || '',
+        triage: form.triage || 'yellow',
+        status: 'waiting',
+      })
+      const entry = data?.data || data || {}
+      setCases((prev) => [entry, ...prev])
+      toast.success('Emergency case logged')
+      if (autoPrintEmergencySlip) {
+        printEmergencyCaseSlip(entry)
+      }
+      setForm({ patient_name: '', contact: '', complaint: '', triage: 'yellow' })
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Failed to log emergency case')
     }
-    const updated = [entry, ...cases]
-    localStorage.setItem('emergency_cases', JSON.stringify(updated))
-    setCases(updated)
-    toast.success('Emergency case logged')
-    if (autoPrintEmergencySlip) {
-      printEmergencyCaseSlip(entry)
-    }
-    setForm({ patient_name: '', contact: '', complaint: '', triage: 'yellow' })
   }
 
-  function updateStatus(id, status) {
-    const updated = cases.map(c => c.id === id ? { ...c, status } : c)
-    localStorage.setItem('emergency_cases', JSON.stringify(updated))
-    setCases(updated)
+  async function updateStatus(id, status) {
+    try {
+      await api.patch(`/emergency/cases/${id}/`, { status })
+      setCases((prev) => prev.map(c => c.id === id ? { ...c, status } : c))
+    } catch {
+      toast.error('Failed to update emergency status')
+    }
   }
 
   function openChargeModal(c) {
@@ -3107,6 +3132,13 @@ function EmergencySection() {
   function printEmergencyReceipt({ invoiceNo, patientName, patientUhid, patientPhone, description, amount, paymentMode }) {
     const w = window.open('', '_blank')
     if (!w) return
+    const slipProfile = getPaymentSlipProfile()
+    const hospitalName = escapeHtml(slipProfile.hospital_name || DEFAULT_PAYMENT_SLIP_PROFILE.hospital_name)
+    const address = escapeHtml(slipProfile.address || DEFAULT_PAYMENT_SLIP_PROFILE.address)
+    const pinCode = escapeHtml(slipProfile.pin_code || DEFAULT_PAYMENT_SLIP_PROFILE.pin_code)
+    const phone = escapeHtml(slipProfile.phone || DEFAULT_PAYMENT_SLIP_PROFILE.phone)
+    const email = escapeHtml(slipProfile.email || DEFAULT_PAYMENT_SLIP_PROFILE.email)
+    const website = escapeHtml(slipProfile.website || DEFAULT_PAYMENT_SLIP_PROFILE.website)
     const dateTimeStr = format(new Date(), 'd/M/yyyy HH:mm:ss')
     const upPatient = (patientName || 'PATIENT').toUpperCase()
     const payModeLabel =
@@ -3161,14 +3193,14 @@ function EmergencySection() {
       <div class="slip">
         <div class="top">
           <div>
-            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-name">${hospitalName}</div>
             <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
           </div>
           <div class="address">
-            <strong>Jind, Haryana</strong><br/>
-            Pincode: 126102<br/>
-            Phone: +91-XXXXXXXXXX<br/>
-            Email: info@vardraanhospital.com
+            <strong>${address}</strong><br/>
+            Pincode: ${pinCode}<br/>
+            Phone: ${phone}<br/>
+            Email: ${email}${website ? `<br/>Website: ${website}` : ''}
           </div>
         </div>
         <div class="receipt-title">Receipt</div>
@@ -3212,6 +3244,13 @@ function EmergencySection() {
       toast.error('Allow pop-ups to print the emergency slip')
       return
     }
+    const slipProfile = getPaymentSlipProfile()
+    const hospitalName = escapeHtml(slipProfile.hospital_name || DEFAULT_PAYMENT_SLIP_PROFILE.hospital_name)
+    const address = escapeHtml(slipProfile.address || DEFAULT_PAYMENT_SLIP_PROFILE.address)
+    const pinCode = escapeHtml(slipProfile.pin_code || DEFAULT_PAYMENT_SLIP_PROFILE.pin_code)
+    const phone = escapeHtml(slipProfile.phone || DEFAULT_PAYMENT_SLIP_PROFILE.phone)
+    const email = escapeHtml(slipProfile.email || DEFAULT_PAYMENT_SLIP_PROFILE.email)
+    const website = escapeHtml(slipProfile.website || DEFAULT_PAYMENT_SLIP_PROFILE.website)
     const arrived = c.arrived_at ? format(new Date(c.arrived_at), 'd/M/yyyy HH:mm:ss') : format(new Date(), 'd/M/yyyy HH:mm:ss')
     const caseRef = `ER-${c.id}`
     const triageLabel =
@@ -3249,15 +3288,15 @@ function EmergencySection() {
       <div class="slip">
         <div class="top">
           <div>
-            <div class="hosp-name">Vardraan Hospital</div>
+            <div class="hosp-name">${hospitalName}</div>
             <div class="hosp-tag">Emergency &amp; Trauma</div>
             <div style="margin-top:6px"><span class="er-badge">EMERGENCY</span></div>
           </div>
           <div class="address">
-            <strong>Jind, Haryana</strong><br/>
-            Pincode: 126102<br/>
-            Phone: +91-XXXXXXXXXX<br/>
-            Email: info@vardraanhospital.com
+            <strong>${address}</strong><br/>
+            Pincode: ${pinCode}<br/>
+            Phone: ${phone}<br/>
+            Email: ${email}${website ? `<br/>Website: ${website}` : ''}
           </div>
         </div>
         <div class="slip-title">Emergency registration slip</div>
@@ -3344,15 +3383,14 @@ function EmergencySection() {
         status: 'success',
       })
 
-      const updated = cases.map(c => c.id === chargeCase.id ? {
-        ...c,
+      const patchData = {
         status: 'attended',
         attended_at: new Date().toISOString(),
         charge_amount: amount.toFixed(2),
         charge_invoice_no: inv.invoice_no || '',
-      } : c)
-      localStorage.setItem('emergency_cases', JSON.stringify(updated))
-      setCases(updated)
+      }
+      await api.patch(`/emergency/cases/${chargeCase.id}/`, patchData)
+      setCases((prev) => prev.map(c => c.id === chargeCase.id ? { ...c, ...patchData } : c))
 
       if (chargeForm.auto_print) {
         printEmergencyReceipt({
@@ -3480,14 +3518,13 @@ function EmergencySection() {
         })
       }
 
-      const updated = cases.map(c => c.id === admitCase.id ? {
-        ...c,
+      const patchData = {
         status: 'admitted',
         admitted_at: new Date().toISOString(),
         admitted_bed: pickedBed.bed_code,
-      } : c)
-      localStorage.setItem('emergency_cases', JSON.stringify(updated))
-      setCases(updated)
+      }
+      await api.patch(`/emergency/cases/${admitCase.id}/`, patchData)
+      setCases((prev) => prev.map(c => c.id === admitCase.id ? { ...c, ...patchData } : c))
 
       toast.success('Emergency patient admitted to IPD')
       setAdmitCase(null)
@@ -5827,8 +5864,17 @@ function OpdSlipsSection({ onMoveToIpd }) {
   const [doctors, setDoctors] = useState([])
   const PAGE_SIZE = 10
   const debounceRef = useRef(null)
+  const formatPersonName = (value) => String(value || '')
+    .split(' ')
+    .map((part) => (part ? `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}` : ''))
+    .join(' ')
   const getDoctorUserId = (doctorRow) =>
     doctorRow?.user == null ? '' : String(doctorRow.user)
+  const getVisitDoctorName = (visitRow) => {
+    const assignedDoctorUser = visitRow?.doctor_user == null ? '' : String(visitRow.doctor_user)
+    const matchedDoctor = doctors.find((d) => getDoctorUserId(d) === assignedDoctorUser)
+    return matchedDoctor?.name || visitRow?.doctor_name || visitRow?.doc_name || '-'
+  }
 
   useEffect(() => {
     api.get('/doctor-profiles/?limit=500').then(({ data }) => setDoctors(Array.isArray(data?.data) ? data.data : (data?.results || data || []))).catch(() => {})
@@ -5858,8 +5904,33 @@ function OpdSlipsSection({ onMoveToIpd }) {
   async function handleSaveEdit(e) {
     e.preventDefault()
     try {
+      const patientId = editingVisit.patient
+      if (patientId) {
+        const normalizedName = formatPersonName(editingVisit.patient_name || '').trim()
+        const nameParts = normalizedName.split(/\s+/).filter(Boolean)
+        const phoneDigits = String(editingVisit.patient_phone || '').replace(/\D/g, '')
+        const patientPayload = {
+          first_name: nameParts[0] || 'Patient',
+          last_name: nameParts.slice(1).join(' ') || '',
+          guardian_name: formatPersonName(editingVisit.patient_guardian_name || '').trim(),
+          gender: editingVisit.patient_gender || 'male',
+          address_line1: editingVisit.patient_address || '',
+          city: editingVisit.patient_city || '',
+          state: editingVisit.patient_state || '',
+        }
+        if (editingVisit.patient_age !== '' && editingVisit.patient_age != null) {
+          const a = parseInt(editingVisit.patient_age, 10)
+          if (!Number.isNaN(a)) patientPayload.age = a
+        }
+        if (phoneDigits.length >= 10) {
+          patientPayload.phone = phoneDigits.slice(-10)
+        }
+        await api.patch(`/patients/${patientId}/`, patientPayload)
+      }
+
       await api.patch(`/opd-visits/${editingVisit.id}/`, {
         doctor_user: editingVisit.doctor_user || null,
+        chief_complaint: editingVisit.visit_reason || '',
         visit_reason: editingVisit.visit_reason || '',
         status: editingVisit.status,
         visit_date: editingVisit.visit_date,
@@ -5869,18 +5940,55 @@ function OpdSlipsSection({ onMoveToIpd }) {
       toast.success('OPD Slip updated!')
       setEditingVisit(null)
       fetchVisits(page, search)
-    } catch {
-      toast.error('Failed to update OPD slip')
+    } catch (err) {
+      const detail = err?.response?.data?.detail || JSON.stringify(err?.response?.data || {}) || 'Failed to update OPD slip'
+      toast.error(detail)
     }
+  }
+
+  async function openEditVisit(visit) {
+    if (!visit) return
+    let enriched = { ...visit }
+    if (visit.patient) {
+      try {
+        const { data } = await api.get(`/patients/${visit.patient}/`)
+        const p = data?.data || data || {}
+        const fullName = [p.first_name, p.last_name].filter(Boolean).join(' ')
+        enriched = {
+          ...enriched,
+          patient_name: formatPersonName(fullName || visit.patient_name || ''),
+          patient_phone: p.phone || visit.patient_phone || '',
+          patient_gender: p.gender || visit.patient_gender || 'male',
+          patient_age: p.age != null ? String(p.age) : (visit.patient_age || ''),
+          patient_guardian_name: formatPersonName(p.guardian_name || visit.patient_guardian_name || ''),
+          patient_address: p.address_line1 || visit.patient_address || '',
+          patient_city: p.city || visit.patient_city || '',
+          patient_state: p.state || visit.patient_state || '',
+        }
+      } catch {
+        // fall back to visit payload values
+      }
+    }
+    setEditingVisit(enriched)
   }
 
   function reprintOpdSlip(visit) {
     if (!visit) return
     setPrintVisit({
       ...visit,
-      doc_name: visit.doc_name || visit.doctor_name || '',
+      doc_name: getVisitDoctorName(visit),
       chief_complaint: visit.chief_complaint || visit.visit_reason || '',
       display_token: visit.display_token || String(visit.queue_number || visit.token_number || ''),
+    })
+  }
+
+  function openViewVisit(visit) {
+    if (!visit) return
+    const resolvedDoctor = getVisitDoctorName(visit)
+    setViewVisit({
+      ...visit,
+      doctor_name: resolvedDoctor,
+      doc_name: resolvedDoctor,
     })
   }
 
@@ -5946,7 +6054,7 @@ function OpdSlipsSection({ onMoveToIpd }) {
                   {v.created_by_name && <p className="text-[10px] text-gray-400 font-bold mt-0.5">By: {v.created_by_name}</p>}
                 </div>
                 <div className="col-span-2 min-w-0 pr-2">
-                  <span className="text-gray-600 truncate block">{v.doctor_name || '-'}</span>
+                  <span className="text-gray-600 truncate block">{getVisitDoctorName(v)}</span>
                 </div>
                 <div className="col-span-1 min-w-0 pr-2 text-gray-500 text-xs line-clamp-2">
                   {v.visit_reason || '-'}
@@ -5958,7 +6066,7 @@ function OpdSlipsSection({ onMoveToIpd }) {
                   {v.amount && <span className="text-xs font-bold text-gray-600 border border-gray-200 px-1.5 rounded bg-gray-50 flex items-center"><IndianRupee size={10} className="mr-0.5"/> {v.amount} <span className="ml-1 text-[9px] uppercase">({v.payment_mode || 'CASH'})</span></span>}
                 </div>
                 <div className="col-span-3 flex flex-wrap gap-1.5 items-center justify-end">
-                  <button onClick={() => setViewVisit(v)} className="h-8 min-w-[62px] flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
+                  <button onClick={() => openViewVisit(v)} className="h-8 min-w-[62px] flex items-center justify-center gap-1 text-[9px] font-black text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-indigo-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
                     <Eye size={12} className="group-hover:scale-110 transition-transform" /> View
                   </button>
                   <button onClick={() => moveVisitToIpd(v)} className="h-8 min-w-[58px] flex items-center justify-center gap-1 text-[9px] font-black text-blue-600 hover:text-white bg-blue-50 hover:bg-blue-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-blue-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
@@ -5967,7 +6075,7 @@ function OpdSlipsSection({ onMoveToIpd }) {
                   <button onClick={() => reprintOpdSlip(v)} className="h-8 min-w-[66px] flex items-center justify-center gap-1 text-[9px] font-black text-sky-600 hover:text-white bg-sky-50 hover:bg-sky-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-sky-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
                     <Printer size={12} className="group-hover:scale-110 transition-transform" /> Print
                   </button>
-                  <button onClick={() => setEditingVisit(v)} className="h-8 min-w-[60px] flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
+                  <button onClick={() => openEditVisit(v)} className="h-8 min-w-[60px] flex items-center justify-center gap-1 text-[9px] font-black text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-100 shadow-sm hover:shadow-md active:scale-95 group whitespace-nowrap">
                     <Edit2 size={12} className="group-hover:scale-110 transition-transform" /> Edit
                   </button>
                 </div>
@@ -6006,6 +6114,91 @@ function OpdSlipsSection({ onMoveToIpd }) {
               <button type="button" onClick={() => setEditingVisit(null)} className="text-white/80 hover:text-white pointer-events-auto"><X size={18} /></button>
             </div>
             <div className="p-4 overflow-y-auto space-y-4">
+               <div className="grid grid-cols-2 gap-3">
+                 <div className="col-span-2">
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Patient Name</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_name || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_name: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="Patient full name"
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Phone</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_phone || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_phone: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="Mobile number"
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Age</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="150"
+                      value={editingVisit.patient_age || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_age: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Gender</label>
+                    <select
+                      value={editingVisit.patient_gender || 'male'}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_gender: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                    >
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                      <option value="other">Other</option>
+                    </select>
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Guardian / Relative</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_guardian_name || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_guardian_name: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="Guardian name"
+                    />
+                 </div>
+                 <div className="col-span-2">
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Address</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_address || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_address: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="Address"
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">City</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_city || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_city: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="City"
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">State</label>
+                    <input
+                      type="text"
+                      value={editingVisit.patient_state || ''}
+                      onChange={e => setEditingVisit({ ...editingVisit, patient_state: e.target.value })}
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="State"
+                    />
+                 </div>
+               </div>
                <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">Visit Date</label>
                   <div className="relative">
@@ -6202,7 +6395,7 @@ function OpdSlipsSection({ onMoveToIpd }) {
                 className="flex-1 py-3 px-4 bg-blue-600 text-white rounded-xl font-black text-xs hover:bg-blue-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
                 <Bed size={16} className="group-hover:scale-110 transition-transform" /> Move To IPD
               </button>
-              <button onClick={() => { setEditingVisit(viewVisit); setViewVisit(null); }} 
+              <button onClick={() => { openEditVisit(viewVisit); setViewVisit(null); }} 
                 className="flex-[1.5] py-3 px-4 bg-emerald-600 text-white rounded-xl font-black text-xs hover:bg-emerald-700 transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-2 uppercase tracking-[0.2em] active:scale-95 group">
                 <Edit2 size={16} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" /> Edit Visit Details
               </button>
@@ -6775,20 +6968,38 @@ function PaymentSlipsListSection() {
 function PaymentSlipSettingsSection() {
   const [form, setForm] = useState(() => getPaymentSlipProfile())
 
+  useEffect(() => {
+    let cancelled = false
+    async function hydrate() {
+      await loadReceptionPortalSettings()
+      if (!cancelled) setForm(getPaymentSlipProfile())
+    }
+    hydrate()
+    return () => { cancelled = true }
+  }, [])
+
   function onChange(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
-  function handleSave(e) {
+  async function handleSave(e) {
     e.preventDefault()
-    savePaymentSlipProfile(form)
-    toast.success('Payment slip details saved')
+    try {
+      await savePaymentSlipProfile(form)
+      toast.success('Payment slip details saved')
+    } catch {
+      toast.error('Failed to save payment slip details')
+    }
   }
 
-  function handleReset() {
+  async function handleReset() {
     setForm({ ...DEFAULT_PAYMENT_SLIP_PROFILE })
-    savePaymentSlipProfile(DEFAULT_PAYMENT_SLIP_PROFILE)
-    toast.success('Payment slip details reset')
+    try {
+      await savePaymentSlipProfile(DEFAULT_PAYMENT_SLIP_PROFILE)
+      toast.success('Payment slip details reset')
+    } catch {
+      toast.error('Failed to reset payment slip details')
+    }
   }
 
   return (
@@ -6890,6 +7101,16 @@ function OpdSettingsSection() {
 
   useEffect(() => {
     let cancelled = false
+    async function hydrate() {
+      await loadReceptionPortalSettings()
+      if (!cancelled) setForm(getReceptionOpdSettings())
+    }
+    hydrate()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
     async function loadDoctors() {
       try {
         const { data } = await api.get('/doctor-profiles/?limit=500')
@@ -6908,16 +7129,24 @@ function OpdSettingsSection() {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
-  function handleSave(e) {
+  async function handleSave(e) {
     e.preventDefault()
-    saveReceptionOpdSettings(form)
-    toast.success('OPD settings saved')
+    try {
+      await saveReceptionOpdSettings(form)
+      toast.success('OPD settings saved')
+    } catch {
+      toast.error('Failed to save OPD settings')
+    }
   }
 
-  function handleReset() {
+  async function handleReset() {
     setForm({ ...DEFAULT_RECEPTION_OPD_SETTINGS })
-    saveReceptionOpdSettings(DEFAULT_RECEPTION_OPD_SETTINGS)
-    toast.success('OPD settings reset')
+    try {
+      await saveReceptionOpdSettings(DEFAULT_RECEPTION_OPD_SETTINGS)
+      toast.success('OPD settings reset')
+    } catch {
+      toast.error('Failed to reset OPD settings')
+    }
   }
 
   return (
@@ -7996,6 +8225,10 @@ export default function ReceptionistPortal() {
     clearAuthStorage()
     nav('/login')
   }
+
+  useEffect(() => {
+    loadReceptionPortalSettings()
+  }, [])
 
   useEffect(() => { saveRoomsConfig(rooms) }, [rooms])
 
