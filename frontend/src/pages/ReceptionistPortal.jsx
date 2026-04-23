@@ -495,6 +495,12 @@ function OPDSection({ rooms }) {
   const normalizeId = (value) => (value == null ? '' : String(value))
   const getDoctorUserId = (doctorRow) =>
     normalizeId(doctorRow?.user ?? doctorRow?.user_id ?? doctorRow?.userId)
+  const getDoctorFee = (doctorRow) => {
+    const rawFee = doctorRow?.consultation_fee ?? doctorRow?.consultationFee ?? doctorRow?.fee
+    if (rawFee == null || rawFee === '') return null
+    const numericFee = Number(String(rawFee).replace(/[^0-9.]/g, ''))
+    return Number.isFinite(numericFee) && numericFee > 0 ? numericFee : null
+  }
   const getRoomForDoctorUser = (doctorUser) => {
     const id = normalizeId(doctorUser)
     if (!id) return null
@@ -1293,17 +1299,17 @@ function OPDSection({ rooms }) {
             <select value={form.doctor} onChange={e => {
               const selectedDocId = e.target.value
               const selectedDoc = doctors.find(d => getDoctorUserId(d) === normalizeId(selectedDocId))
-              const fee = selectedDoc?.consultation_fee
+              const fee = getDoctorFee(selectedDoc)
               setForm(f => ({
                 ...f,
                 doctor: selectedDocId,
-                amount: fee && Number(fee) > 0 ? String(Number(fee)) : f.amount,
+                amount: fee != null ? String(fee) : f.amount,
               }))
             }} className={inp}>
               <option value="">Walk-in / Any</option>
               {doctors.filter(d => getDoctorUserId(d)).map(d => (
                 <option key={getDoctorUserId(d)} value={getDoctorUserId(d)}>
-                  {d.name}{d.consultation_fee > 0 ? ` · ₹${d.consultation_fee}` : ''}
+                  {d.name}{getDoctorFee(d) != null ? ` · ₹${getDoctorFee(d)}` : ''}
                 </option>
               ))}
             </select>
