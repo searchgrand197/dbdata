@@ -24,12 +24,12 @@ class Migration(migrations.Migration):
                 ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ("default_city", models.CharField(blank=True, default="Jind", max_length=120)),
                 ("default_state", models.CharField(blank=True, default="Haryana", max_length=120)),
-                ("hospital_name", models.CharField(blank=True, default="Vardraan Hospital", max_length=200)),
-                ("address", models.CharField(blank=True, default="Jind, Haryana, 126102", max_length=255)),
+                ("hospital_name", models.CharField(blank=True, default="Vardaan Hospital", max_length=200)),
+                ("address", models.CharField(blank=True, default="Gohana Road Jind, Haryana, 126102", max_length=255)),
                 ("pin_code", models.CharField(blank=True, default="126102", max_length=30)),
-                ("phone", models.CharField(blank=True, default="+91-XXXXXXXXXX", max_length=40)),
-                ("email", models.CharField(blank=True, default="info@vardraanhospital.com", max_length=120)),
-                ("website", models.CharField(blank=True, default="www.vardraanhospital.com", max_length=200)),
+                ("phone", models.CharField(blank=True, default="+91-7082877717", max_length=40)),
+                ("email", models.CharField(blank=True, default="health@vardaanhospitaljind.com", max_length=120)),
+                ("website", models.CharField(blank=True, default="www.vardaanhospitaljind.com", max_length=200)),
                 (
                     "default_doctor_user",
                     models.ForeignKey(

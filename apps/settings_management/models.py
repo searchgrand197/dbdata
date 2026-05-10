@@ -57,12 +57,12 @@ class ReceptionPortalSettings(TimeStampedModel, UUIDPrimaryKeyModel):
         related_name="default_reception_portal_for_hospitals",
     )
 
-    hospital_name = models.CharField(max_length=200, blank=True, default="Vardraan Hospital")
+    hospital_name = models.CharField(max_length=200, blank=True, default="Vardaan Hospital")
     address = models.CharField(max_length=255, blank=True, default="Jind, Haryana, 126102")
     pin_code = models.CharField(max_length=30, blank=True, default="126102")
-    phone = models.CharField(max_length=40, blank=True, default="+91-XXXXXXXXXX")
-    email = models.CharField(max_length=120, blank=True, default="info@vardraanhospital.com")
-    website = models.CharField(max_length=200, blank=True, default="www.vardraanhospital.com")
+    phone = models.CharField(max_length=40, blank=True, default="+91-7082877717")
+    email = models.CharField(max_length=120, blank=True, default="health@vardaanhospitaljind.com")
+    website = models.CharField(max_length=200, blank=True, default="www.vardaanhospitaljind.com")
 
     def __str__(self) -> str:
         return f"Reception settings ({self.hospital_id})"

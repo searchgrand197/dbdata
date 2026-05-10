@@ -16,12 +16,12 @@ import BedSelector from '../components/BedSelector'
 import OpdGeneratorTab from '../components/OpdTemplateEditor/OpdGeneratorTab'
 
 const DEFAULT_PAYMENT_SLIP_PROFILE = {
-  hospital_name: 'Vardraan Hospital',
-  address: 'Jind, Haryana, 126102',
+  hospital_name: 'Vardaan Hospital',
+  address: 'Gohana Road ,Jind, Haryana, 126102',
   pin_code: '126102',
-  phone: '+91-XXXXXXXXXX',
-  email: 'info@vardraanhospital.com',
-  website: 'www.vardraanhospital.com',
+  phone: '+91-7082877717',
+  email: 'health@vardaanhospitaljind.com',
+  website: 'www.vardaanhospitaljind.com',
 }
 
 const DEFAULT_RECEPTION_OPD_SETTINGS = {
@@ -2228,14 +2228,14 @@ function printIpdAdmitSlip({
     <div class="slip">
       <div class="top">
         <div>
-          <div class="hosp-name">Vardraan Hospital</div>
+          <div class="hosp-name">Vardaan Hospital</div>
           <div class="hosp-tag">Healthcare &amp; Diagnostics</div>
         </div>
         <div class="address">
-          <strong>Jind, Haryana</strong><br/>
+          <strong>Gohana Road ,Jind, Haryana</strong><br/>
           Pincode: 126102<br/>
-          Phone: +91-XXXXXXXXXX<br/>
-          Email: info@vardraanhospital.com
+          Phone: +91-7082877717<br/>
+          Email: health@vardaanhospitaljind.com
         </div>
       </div>
 
@@ -4378,7 +4378,7 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
       <div ref={printRef} className="w-[210mm] min-h-[297mm] bg-white text-black p-[12mm] font-sans mx-auto shadow-2xl print:shadow-none text-sm p-summary-body relative">
         <div className="hosp-header">
           <div className="hosp-brand">
-            <h2>VARDRAAN HOSPITAL</h2>
+            <h2>VARDAAN HOSPITAL</h2>
             <p>Advanced Clinical Care & Diagnostics</p>
           </div>
           <div className="doc-meta">
@@ -4445,7 +4445,7 @@ function PrintDischargeSummary({ rec, ledger, onClose }) {
         
         <div className="footer-note">
           This is an electronically generated clinical document and does not require a physical signature.<br/>
-          Vardraan Hospital · 123 Healthcare Ave, New Delhi
+          Vardaan Hospital · Gohana Road ,Jind, Haryana, 126102
         </div>
       </div>
       
